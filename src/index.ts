@@ -1,17 +1,4 @@
-export interface SpecificationRow<T = unknown> {
-  result: T;
-  rowHash: string;
-}
-
-export interface SpecificationChange<T = unknown> extends SpecificationRow<T> {
-  operation: "added" | "removed";
-}
-
-export interface RowStream<T = unknown> extends AsyncIterable<SpecificationChange<T>> {
-  stop(): void;
-  readonly dropped: number;
-  readonly pending: number;
-}
+import { SpecificationRow } from "jinaga";
 
 export interface WorkerConsumerOptions<T = unknown> {
   name: string;
