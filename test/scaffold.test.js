@@ -28,7 +28,7 @@ test("scaffolded consume entrypoint is intentionally unimplemented", async () =>
 });
 
 test("publish workflow is present but disabled", async () => {
-  const workflowPath = path.join(process.cwd(), ".github", "workflows", "publish.yml");
+  const workflowPath = path.join(__dirname, "..", ".github", "workflows", "publish.yml");
   const content = fs.readFileSync(workflowPath, "utf8");
 
   assert.match(content, /workflow_dispatch:/);
