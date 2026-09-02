@@ -1,0 +1,34 @@
+{
+  "name": "jinaga-worker",
+  "version": "0.0.0",
+  "description": "Worker process that services a Jinaga queue",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "test": "npm run build && node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jinaga/jinaga-worker.git"
+  },
+  "keywords": [
+    "jinaga",
+    "worker"
+  ],
+  "author": "Jinaga",
+  "license": "MIT",
+  "type": "commonjs",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "jinaga": "^6.12.0"
+  },
+  "devDependencies": {
+    "jinaga": "^6.12.0",
+    "typescript": "^7.0.2"
+  }
+}
