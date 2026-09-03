@@ -16,6 +16,7 @@ records the evaluation and the compromises.
 
 [251]: https://github.com/jinaga/jinaga.js/issues/251
 [250]: https://github.com/jinaga/jinaga.js/issues/250
+[249]: https://github.com/jinaga/jinaga.js/issues/249
 
 ---
 
@@ -533,7 +534,7 @@ its documentation must carry, because every one of them is silent when violated.
 | `retry.baseMs` | consumer | 1_000 | |
 | `retry.capMs` | consumer | 30_000 | Five attempts land in 15–30s, well inside one sweep. |
 | `sweepIntervalMs` | consumer | 60_000 | The backstop is cheap against a near-empty set and is only a latency floor for dropped notifications. |
-| `handlerTimeoutMs` | consumer | 30_000 | Matches `listenerTimeoutMs` from #249. |
+| `handlerTimeoutMs` | consumer | 30_000 | Matches `listenerTimeoutMs` from [#249][249]. |
 | `capacity` | consumer | 1024 | `DEFAULT_ROW_STREAM_CAPACITY`. Only the hint path is bounded; rows from a read are never dropped. |
 
 No option appears in two rows of the *Home* column. That is the property to
