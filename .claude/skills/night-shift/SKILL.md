@@ -120,16 +120,18 @@ There is no MCP tool for the Stacks API. Use the committed script, which is pre-
 
 ### Confirm CI actually ran, by event
 
-A green check is not evidence until you know what triggered it. Scope the lookup to one commit and one workflow file:
+A green check is not evidence until you know what triggered it. Read the run's `event`, not only its `conclusion`, and scope the lookup to one commit and one workflow.
+
+**`gh` is not installed in the routine environment**, so use `mcp__github__actions_list` with `workflow_id: "ci.yml"` and the head SHA, and read `event` and `conclusion` off each run. In a local session with `gh` available, the same question is:
 
 ```
 gh api "repos/jinaga/jinaga-worker/actions/workflows/ci.yml/runs?head_sha=<sha>" \
   --jq '.workflow_runs[] | "\(.event)/\(.conclusion)"'
 ```
 
-Address the workflow by its **file**, not by matching a display name: a run's `name` is the *run* name, which a workflow can override with `run-name:`, and a name filter that stops matching returns nothing, which reads exactly like "CI never ran."
+Either way, address the workflow by its **file**, not by matching a display name: a run's `name` is the *run* name, which a workflow can override with `run-name:`, and a name filter that stops matching returns nothing, which reads exactly like "CI never ran."
 
-Expect `pull_request` on every layer. If a layer shows no run at all, the sanctioned move is `workflow_dispatch` on `ci.yml` — say in your report that you dispatched it, and treat it as a finding worth a note, because on this repository it should not be necessary.
+Expect `pull_request` on every layer. If a layer shows no run at all, the sanctioned move is `workflow_dispatch` on `ci.yml` (`mcp__github__actions_run_trigger`) — say in your report that you dispatched it, and treat it as a finding worth a note, because on this repository it should not be necessary.
 
 **Never push an empty commit, and never close and reopen a pull request, to provoke a run.**
 
