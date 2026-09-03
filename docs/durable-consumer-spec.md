@@ -65,9 +65,9 @@ Two rules shape this surface, both from the constitution:
 - **Every option has exactly one home.** No setting appears on both the worker
   and a consumer, so there is no precedence rule to remember and no pair of
   values to keep consistent by hand (Art. 4, 8).
-- **The consumer set is fixed at construction.** There is no window during which
-  registration is legal and no later state in which it is not, so the guard that
-  would have rejected a late `consume()` has nothing to reject (Art. 3).
+- **The consumer set is fixed at construction.** Consumers are passed to
+  `createWorker`, so the set is complete before the worker exists and the
+  lifecycle has one shape (Art. 3).
 
 ```ts
 import { Jinaga, SpecificationOf, SpecificationRow } from "jinaga";
@@ -102,7 +102,7 @@ export interface WorkerOptions {
 
 Nothing here can be set per consumer. `onNoProgress` is the worker's alone, and
 the event names the consumer it came from, so a per-consumer reaction is a
-`switch` in one handler rather than a second registration site.
+`switch` in one handler.
 
 ### 2.2 Consumer options — what genuinely varies per consumer
 
@@ -201,8 +201,8 @@ export class Limiter {
 
 Every count in `ConsumerStatus` is computed on call by tallying the row-state
 map in §3.3. None is maintained incrementally, so none can drift from the state
-it describes (Art. 2). `lastSweep` is one optional rather than two, because an
-`at` without a `size` is not a state the problem contains.
+it describes (Art. 2). `lastSweep` is one optional, because an `at` without a
+`size` is not a state the problem contains.
 
 ### 2.5 The shape of a worker
 
@@ -282,11 +282,9 @@ type RowState<U> =
     | { phase: "quarantined"; row: SpecificationRow<U> };
 ```
 
-Four phases for four situations. Parallel `inFlight` / `completed` /
-`quarantined` sets would admit eight combinations for the same four meanings,
-and the four impossible ones would each need a guard (Art. 1, 3). `attempts` is
-absent from `quarantined` because a quarantined row is never attempted again, so
-the count has nothing left to govern.
+Four phases for four situations (Art. 1, 3). `attempts` is absent from
+`quarantined` because a quarantined row is never attempted again, so the count
+has nothing left to govern.
 
 | From | Event | To |
 | --- | --- | --- |
@@ -305,6 +303,17 @@ it when the row leaves. A `removed` change is the exact acknowledgement — but 
 advisory one, since removals dispatch through the same abandonable listener path
 as additions. Nothing waits on it.
 
+It is advisory in a second way. Notifications are unordered (§5), so one save
+that carries both a row's source fact and its completion fact produces an
+`added` and a `removed` whose arrival order is undefined; a feed catch-up after
+a restart delivers exactly that graph. When the `removed` arrives first it
+clears the entry, and the `added` behind it finds no entry and is admitted.
+Handler idempotence is what makes that safe, and this is the second source of
+duplicate dispatch alongside the abandoned timeout of §3.4. The same sequence
+can re-admit a `quarantined` row, because `removed` clears from any phase:
+suppression holds against the sweep, which is the operational path, and a stale
+addition costs one further attempt.
+
 ### 3.4 Dispatch
 
 Dispatch never happens on the notification turn. The stream's listener only
@@ -317,8 +326,8 @@ release the slot            // released before any backoff wait, not held across
 ```
 
 A timeout counts as a rejection. The abandoned handler keeps running —
-JavaScript offers no way to cancel it — which is one reason the handler contract
-demands idempotence.
+JavaScript offers no way to cancel it — which is one of the two reasons the
+handler contract demands idempotence. The other is the stale addition of §3.3.
 
 ### 3.5 Retry
 
@@ -344,8 +353,8 @@ On either transition into `quarantined`, in this order:
 3. Emit `onNoProgress` once, bounded by `handlerTimeoutMs`, so the callback
    cannot wedge the loop it exists to report on.
 
-Thereafter the row is skipped on every sweep. Nothing durable is written by the
-library, so a restart clears the map and retries — consistent with the rest of
+Thereafter the row is skipped on every sweep, and on every addition but the
+stale one of §3.3. Nothing durable is written by the library, so a restart clears the map and retries — consistent with the rest of
 the design, where nothing lives outside the graph.
 
 ### 3.7 Non-progress
@@ -477,15 +486,25 @@ its documentation must carry, because every one of them is silent when violated.
 - **Purge conditions are checked on every read and subscribe.** A specification
   over a purgeable fact type must carry the purge condition's `notExists`, or
   every sweep throws.
-- **There is no ordering between notifications.** `ObservableSource.notify` fans
-  out with `Promise.all` and discards topological order (a KNOWN GAP comment in
-  `observable.js`). Never infer "the parent completed before this child
-  appeared" from delivery order. This is the mechanical reason for one consumer
-  per layer.
+- **Notifications are unordered, and the store is complete before any of them
+  runs.** `ObservableSource.notify` fans out with `Promise.all` and discards the
+  topological order the envelopes arrive in (a KNOWN GAP comment in
+  `observable.js`). Two facts about where it sits make that safe here.
+  `FactManager.save` persists the whole batch before it calls `notify`, and each
+  listener re-reads storage — `store.read([givenReference], specification)` — so
+  every notification sees every fact of the batch whatever the delivery order.
+  A row therefore reaches the stream complete, at the moment its last
+  constituent fact is saved, and the order decides only which of two redundant
+  deliveries lands first. This loop is order-insensitive by construction rather
+  than by compensation. Still, never infer "the parent completed before this
+  child appeared" from delivery order, and see §3.3 for the one place the
+  absence of order is visible to the row-state map.
 - **Nested projections are not observed.** Only root-path inverses are
   registered, so a projected collection is a snapshot from when the row's own
   notification fired. Do not project a collection a handler needs current; make
-  it a layer with its own consumer.
+  it a layer with its own consumer. This, with a parent's completion fact being
+  what makes a child's stage eligible, is the mechanical reason for one consumer
+  per layer.
 - **Distribution splits loud and silent.** A structural denial throws
   (`DistributionDeniedError`, `reactive: false`), and the worker should fail to
   start. A `reactive: true` diagnostic is the subscription race and self-heals
@@ -542,6 +561,7 @@ reverted:
 - skips a quarantined row on every later sweep, and emits `onNoProgress` once
 - reports `stalled` when the handler resolves and a later sweep still returns the row
 - clears row state when a row leaves the set by either path
+- dispatches a row once when its `added` arrives after its `removed`
 - bounds total in-flight work across several consumers by one shared limiter
 - `stop()` drains settled handlers and reports the abandoned count
 - a timed-out handler counts as a rejection, not as progress
@@ -579,8 +599,8 @@ Settled after the RFC, in the order they were taken:
    write belong to the application. Declining it means no dead-letter
    protection, stated plainly rather than warned about.
 2. **A worker host.** `createWorker` owns the Jinaga instance, the shared
-   limiter and the diagnostics. One lifecycle, one `stop()`. *(Revised in
-   §10: consumers are passed to it rather than registered on it.)*
+   limiter and the diagnostics. Consumers are passed to it. One lifecycle, one
+   `stop()`.
 3. **Backoff inside the consumer.** A transient failure recovers in seconds
    rather than waiting a sweep interval.
 4. **Quarantine is remembered in memory.** The row is skipped for the life of
@@ -600,58 +620,23 @@ Settled after the RFC, in the order they were taken:
 
 Scored against
 [Part IV](constitution/degrees-of-freedom-constitution.md#part-iv-evaluation-procedure).
-Five surpluses were found in the first draft of this spec and removed; three
-tensions remain and are recorded as compromises rather than left to be
+Three tensions remain, recorded as compromises rather than left to be
 rediscovered.
 
 ### 10.1 The evaluation
 
 | # | Question | Verdict |
 | --- | --- | --- |
-| 1 | Can I represent a state I would then have to forbid? | **No, after four changes.** See 10.2 (a)–(d). |
+| 1 | Can I represent a state I would then have to forbid? | No. |
 | 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` count is tallied from the row-state map on call; `dropped` is read through to `RowStream`. |
-| 3 | Do two distinct configurations produce identical behavior? | No, after 10.2 (a). A consumer's `limiter` and the worker's are distinct meanings — private budget versus shared — not two spellings of one. |
-| 4 | Does one variable's valid range depend on another's value? | No, after 10.2 (b) and (c). `retry` groups the three knobs that are read together, and no knob's meaning depends on another's value. |
+| 3 | Do two distinct configurations produce identical behavior? | No. A consumer's `limiter` and the worker's are distinct meanings — private budget versus shared — not two spellings of one. |
+| 4 | Does one variable's valid range depend on another's value? | No. `retry` groups the three knobs that are read together, and no knob's meaning depends on another's value. |
 | 5 | Do frequently changing decisions live inside rarely changing mechanism? | No. Retry is a `RetryPolicy` value the loop reads (§3.5); the loop has no policy branches. |
 | 6 | Does the top layer read as steps rather than intent? | No. A consumer is a declaration — specification, handler, quarantine — and §3.3's table is the mechanism that gives it meaning. |
 | 7 | Can a well-formed specification produce a broken system? | **Yes.** Tension T2. |
 | 8 | Does one intended change force coordinated changes elsewhere? | **Yes, in one place.** Tension T1. |
 
-### 10.2 What changed
-
-**(a) Options had two homes.** Six settings appeared on both `WorkerOptions` and
-`ConsumerOptions` as defaults-plus-overrides, and `onNoProgress` and `capacity`
-did too. Nothing said which won. That is one degree of freedom wearing the
-costume of two (Art. 8) and two configurations with one meaning (Art. 4). Each
-option now has exactly one home, chosen by whether it is shared across consumers
-or varies per consumer, and §6 records which.
-
-**(b) The event's `error` was optional.** `NoProgressEvent` carried
-`kind: "failed" | "stalled"` beside `error?: unknown`, with prose saying the
-second is absent when the first is `"stalled"`. Four representable combinations,
-two of them meaningless (Art. 3). It is now a discriminated union: `FailedEvent`
-requires `error`, `StalledEvent` has no such field.
-
-**(c) Three parallel sets held one row's state.** `inFlight`, `completed` and
-`quarantined` admit eight combinations for four situations, and the four
-impossible ones would each have needed a guard (Art. 1, 3). One
-`Map<rowHash, RowState>` with a four-phase union replaced them, and admission
-became a single lookup. `attempts` lives only on the phases where it governs
-something.
-
-**(d) Registration had a window.** `consume()` on the worker was legal before
-`start()` and had to throw afterward — a reachable error state, which is
-evidence the representation admits a configuration the problem does not contain
-(Art. 3). Consumers are now passed to `createWorker`, so the illegal call cannot
-be written. This revises decision 9.2 on constitutional grounds; the ergonomics
-are nearly unchanged, and `worker.consume(...)` remains available if the shape
-is preferred.
-
-**(e) `lastSweepAt` and `lastSweepSize` were separate optionals.** Two fields for
-one axis, with a hand-maintained rule that they are both present or both absent.
-Now one `lastSweep?: { at, size }`.
-
-### 10.3 Tensions
+### 10.2 Tensions
 
 **T1 — The quarantine condition and the quarantine callback co-vary (Art. 8).**
 A consumer can supply `quarantine` and forget the `notExists` in its
