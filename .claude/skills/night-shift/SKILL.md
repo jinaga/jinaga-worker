@@ -80,9 +80,9 @@ Section 8 has the mechanics. This is a read for **reasoning**, never for availab
 
 Each issue declares its dependencies. Honour them: a slice whose dependencies have not merged and are not in the stack below it cannot be verified, because the tests it must pass exercise code that does not exist yet.
 
-Do not parallelise across the chain. Every issue from #3 to #8 touches `src/index.ts` and the same test tree, so two sessions working different slices produce conflicting patches for one design. If two issues are genuinely independent — a docs-only slice, say — work them in parallel and say so.
+Layers of the chain may be worked concurrently, but only stacked: each one branches from the layer below and waits for that branch to exist (section 5). Two sessions taking different slices **both from `main`** produce conflicting patches for one design, because every issue from #3 to #8 touches `src/index.ts` and the same test tree. Stacked is the safe form of the same concurrency, and it is what a multi-dispatch sweep is for.
 
-An issue whose dependencies are unmet is **not available**. Skip it and record the skip with that reason; it is not a claim conflict and should not be recorded as one.
+An issue is **not available** when the layer below it is neither already merged nor being worked in this same sweep. Skip it and record the skip with that reason, naming the issue it waits on; it is not a claim conflict and should not be recorded as one.
 
 ### How much to take
 
@@ -105,6 +105,10 @@ Two rules from `CLAUDE.md` bind every change here: no reversed-decision reminder
 Branch name: `claude/issue-<number>-<slug>`.
 
 When your issue is sequenced behind another, branch from **that issue's branch**, not from `main`, and open your pull request with its base set to that branch. This is a stacked pull request. It lets the chain proceed without waiting for anything to merge, and GitHub retargets each pull request to `main` automatically as the bases land.
+
+**Resolve the base by issue number, and wait for it.** A dispatch names the issue you stack on, not a branch, because the branch carries a slug only its own session chooses. List branches matching `claude/issue-<M>-*` to find it. The session that creates it may still be running, so re-check periodically rather than concluding it is missing on the first look.
+
+If it never appears, report that and open no pull request. **Never fall back to `main`.** Branching from `main` while basing the pull request on the layer below renders that layer's work as deletions in your diff — a change that reads as a revert, passes review by looking small, and is wrong.
 
 ### Register the stack
 
