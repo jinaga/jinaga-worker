@@ -4,6 +4,12 @@ This file is loaded into every conversation. It captures project-wide rules that
 
 For what the package is and the contract it implements, read `docs/durable-consumer-spec.md`. Every structure in that spec is answerable to `docs/constitution/degrees-of-freedom-constitution.md`.
 
+Issues labelled `ready` are queued for automated work. `.claude/skills/night-shift/SKILL.md` documents that protocol: how to tell whether an issue is already claimed or already landed, how the dependency chain between the implementation slices decides ordering, when to stop and ask a question instead of guessing, how stacked pull requests are opened and registered, and how each run is recorded so the reasoning survives the container.
+
+## Build and test
+
+`npm test` builds first, so it is the whole bar on a fresh clone. Run `npm ci && npm test` green before every push.
+
 ## Documentation and code hygiene
 
 - **No reversed-decision reminders.** When a design or mechanism is removed or reversed, rewrite every affected doc, code comment, test, and eval description to describe only current behavior — no "this used to work like X, was removed on \<date>, here's why" asides, no retained "historical record" section standing in for a deleted feature. A fresh reader shouldn't have to figure out which parts of what they're reading are current system behavior versus a resolved argument about a past one; git history and the PR/commit that did the removal already preserve the why.
