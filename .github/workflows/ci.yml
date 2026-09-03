@@ -5,6 +5,10 @@ on:
     branches:
       - main
   pull_request:
+  # The escape hatch for a stacked pull request whose checks never fired.
+  # There is no `branches:` filter above, so every layer gets a run from its
+  # own pull request event and this should stay unused.
+  workflow_dispatch:
 
 jobs:
   build-and-test:
