@@ -27,4 +27,13 @@ export interface ConsumerStatus {
     waiting: number;
     completed: number;
     quarantined: number;
+
+    /** `RowStream.dropped`, read through on call. */
+    dropped: number;
+
+    /**
+     * The most recent backstop sweep. One optional rather than two, because an
+     * `at` without a `size` is not a state the problem contains.
+     */
+    lastSweep?: { at: Date; size: number };
 }
