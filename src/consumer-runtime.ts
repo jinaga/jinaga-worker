@@ -239,20 +239,35 @@ export class ConsumerRuntime {
      * and reaches the map by the same path, because it throws inside this
      * attempt rather than on the caller's turn.
      *
+     * The attempt held for a row is the one whose outcome the map takes. A row
+     * removed and re-admitted while its handler runs is being attempted twice,
+     * and the attempt that replaced this one is the one the map is about; this
+     * one reports nothing, and the abandoned handler runs to its own end.
+     *
      * The attempt settles either way. `stop()` awaits it to decide what
      * drained, and a rejection is the map's business rather than the caller's.
      */
     private runAttempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
-        const attempt = this.dispatch(rowHash, row).then(() => {
-            if (this.inFlight.get(rowHash) === attempt) {
-                this.inFlight.delete(rowHash);
-            }
-        });
+        const current = () => this.inFlight.get(rowHash) === attempt;
+        const attempt: Promise<void> = this.dispatch(rowHash, row, current)
+            .catch(error => this.logger.error(
+                `${this.consumer.name}: dispatching ${rowHash} failed`,
+                { consumer: this.consumer.name, rowHash, error }
+            ))
+            .then(() => {
+                if (current()) {
+                    this.inFlight.delete(rowHash);
+                }
+            });
         this.inFlight.set(rowHash, attempt);
         return attempt;
     }
 
-    private async dispatch(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
+    private async dispatch(
+        rowHash: string,
+        row: SpecificationRow<unknown>,
+        current: () => boolean
+    ): Promise<void> {
         await nextTurn();
         try {
             await this.limiter.run(() => withTimeout(
@@ -261,10 +276,14 @@ export class ConsumerRuntime {
             ));
         }
         catch (error) {
-            this.rejectAttempt(rowHash, error);
+            if (current()) {
+                this.rejectAttempt(rowHash, error);
+            }
             return;
         }
-        applyRowEvent(this.rows, rowHash, { kind: "resolved" });
+        if (current()) {
+            applyRowEvent(this.rows, rowHash, { kind: "resolved" });
+        }
     }
 
     /**

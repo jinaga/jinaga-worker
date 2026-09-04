@@ -460,7 +460,13 @@ test("dispatching a row that has already left the set is harmless", { timeout: D
 
   assert.deepEqual(handle.handled, ["r1", "r1"], "the second attempt did not run the handler");
 
+  // The first attempt is no longer the one the map is about, so its outcome
+  // leaves the row to the attempt that replaced it.
   attempts[0].resolve();
+  await quiesce();
+  assert.equal(phaseOf(rowsOf("items"), "r1"), "dispatching", "a superseded attempt moved the row");
+  assert.equal(worker.status().consumers[0].completed, 0);
+
   attempts[1].resolve();
   await quiesce();
 
@@ -481,4 +487,37 @@ test("dispatching a row that has already left the set is harmless", { timeout: D
   );
 
   await worker.stop();
+});
+
+test("a superseded attempt neither retries nor drains in place of the one that replaced it", { timeout: DEADLINE_MS }, async t => {
+  const attempts = [deferred(), deferred()];
+  const handle = recordingHandler((rowValue, call) => attempts[call - 1].promise);
+  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, {
+    worker: { shutdownTimeoutMs: 5_000 },
+    // Long enough that a retry scheduled here would be visible as `waiting`.
+    consumer: { items: { retry: { maxAttempts: 5, baseMs: 60_000, capMs: 60_000 } } }
+  });
+
+  await worker.start();
+  await streams.items.push(added("r1"));
+  await handle.reaching(1);
+  await streams.items.push(removed("r1"));
+  await streams.items.push(added("r1"));
+  await handle.reaching(2);
+
+  attempts[0].reject(new Error("nope"));
+  await quiesce();
+
+  assert.equal(
+    phaseOf(rowsOf("items"), "r1"),
+    "dispatching",
+    "the superseded rejection paced a row whose handler is still running"
+  );
+  assert.equal(worker.status().consumers[0].waiting, 0);
+
+  // The drain awaits the attempt that is running, not the one it replaced.
+  const stopping = worker.stop();
+  attempts[1].resolve();
+
+  assert.deepEqual(await stopping, { drained: 1, abandoned: 0 });
 });

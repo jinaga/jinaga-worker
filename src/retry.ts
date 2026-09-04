@@ -7,11 +7,11 @@
  */
 export interface RetryPolicy {
     /** How many attempts a row gets before it is given up on. */
-    maxAttempts: number;
+    readonly maxAttempts: number;
     /** The wait before the second attempt. */
-    baseMs: number;
+    readonly baseMs: number;
     /** The longest the wait grows to. */
-    capMs: number;
+    readonly capMs: number;
 }
 
 /** @see ConsumerOptions.retry */
