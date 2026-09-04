@@ -8,6 +8,7 @@ import {
     SpecificationRow
 } from "jinaga";
 import { Limiter } from "./limiter";
+import { NoProgressEvent } from "./no-progress";
 import { DEFAULT_RETRY_POLICY, RetryPolicy } from "./retry";
 
 /**
@@ -31,6 +32,15 @@ export interface ConsumerOptions<T extends unknown[], U> {
 
     /** What the consumer does with a row. */
     handle: (row: SpecificationRow<U>) => Promise<void>;
+
+    /**
+     * What the application writes about a row that has run out of attempts.
+     *
+     * The fact type, the write, and the matching `notExists` in the
+     * specification are the application's: see
+     * [the quarantine pattern](../docs/quarantine-pattern.md).
+     */
+    quarantine?: (row: SpecificationRow<U>, event: NoProgressEvent<U>) => Promise<void>;
 
     /** A private concurrency budget in place of the worker's shared one. */
     limiter?: Limiter;
@@ -100,6 +110,13 @@ export interface Consumer {
 
     /** Run the handler for one row. */
     handle(row: SpecificationRow<unknown>): Promise<void>;
+
+    /**
+     * Write the application's record of a row that has run out of attempts,
+     * when the consumer declared one. Absent otherwise, and a consumer without
+     * one still caps attempts and still reports.
+     */
+    quarantine?(row: SpecificationRow<unknown>, event: NoProgressEvent): Promise<void>;
 }
 
 /**
@@ -112,6 +129,7 @@ export function defineConsumer<T extends unknown[], U>(
 ): Consumer {
     const sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
     const capacity = options.capacity ?? DEFAULT_ROW_STREAM_CAPACITY;
+    const quarantine = options.quarantine;
     return {
         name: options.name,
         limiter: options.limiter,
@@ -128,6 +146,10 @@ export function defineConsumer<T extends unknown[], U>(
             const rows = await j.queryRows(options.specification, ...options.givens);
             return rows as SpecificationRow<unknown>[];
         },
-        handle: row => options.handle(row as SpecificationRow<U>)
+        handle: row => options.handle(row as SpecificationRow<U>),
+        ...(quarantine === undefined ? {} : {
+            quarantine: (row: SpecificationRow<unknown>, event: NoProgressEvent) =>
+                quarantine(row as SpecificationRow<U>, event as NoProgressEvent<U>)
+        })
     };
 }

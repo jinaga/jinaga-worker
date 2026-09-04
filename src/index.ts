@@ -22,6 +22,12 @@ export {
 export { Limiter } from "./limiter";
 
 export {
+  FailedEvent,
+  NoProgressEvent,
+  StalledEvent
+} from "./no-progress";
+
+export {
   DEFAULT_RETRY_POLICY,
   RetryPolicy
 } from "./retry";

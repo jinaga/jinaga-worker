@@ -79,6 +79,7 @@ function controllableQuery(rows = []) {
 function fakeJinaga(stream, query) {
   return {
     hash: fact => `hash-of-${fact.id}`,
+    onDistributionDiagnostic: () => {},
     subscribeRows: async () => stream,
     queryRows: query.read
   };
