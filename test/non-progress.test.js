@@ -12,10 +12,12 @@ const row = rowHash => ({ result: { id: rowHash }, rowHash });
 const added = rowHash => ({ ...row(rowHash), operation: "added" });
 const removed = rowHash => ({ ...row(rowHash), operation: "removed" });
 
-// Every wait here is for an event, not for a delay. This is only the deadline
-// at which an event that is never coming is reported as a failure, so a broken
-// path fails the run instead of hanging it.
-const DEADLINE_MS = 10_000;
+// Every wait here is for an event, not for a delay. `WAIT_MS` is only the
+// deadline at which an event that is never coming is reported as a failure, so
+// a broken path fails the run instead of hanging it. Each test is given more
+// than that, so the wait that failed is what names itself.
+const WAIT_MS = 5_000;
+const DEADLINE_MS = WAIT_MS * 2;
 
 // Three attempts a millisecond apart, so a row exhausts within a test rather
 // than within a sweep interval. The loop reads the policy either way.
@@ -120,9 +122,16 @@ async function quiesce() {
   }
 }
 
-/** Wait for a state the worker reaches on its own turns. */
+/**
+ * Wait for a state the worker reaches on its own turns.
+ *
+ * The bound is wall-clock rather than a count of turns, because some of these
+ * waits sit behind a real backoff timer and a count of turns measures the
+ * machine rather than the wait.
+ */
 async function until(condition, what) {
-  for (let turn = 0; turn < 100_000; turn += 1) {
+  const deadline = Date.now() + WAIT_MS;
+  while (Date.now() < deadline) {
     if (condition()) {
       return;
     }
