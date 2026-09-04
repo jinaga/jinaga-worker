@@ -1,7 +1,7 @@
 import { Jinaga, RowStream, SpecificationRow } from "jinaga";
 import { Consumer } from "./consumer";
 import { Logger } from "./logger";
-import { applyRowEvent, countRows, RowStateMap } from "./row-state";
+import { applyRowEvent, countRows, RowEvent, RowStateMap } from "./row-state";
 import { ConsumerStatus } from "./status";
 
 /**
@@ -23,6 +23,7 @@ export class ConsumerRuntime {
     private readonly inFlight = new Map<string, Promise<void>>();
     private stream: RowStream<unknown> | undefined;
     private sweepTimer: ReturnType<typeof setInterval> | undefined;
+    private lastSweep: { at: Date; size: number } | undefined;
 
     constructor(
         private readonly j: Jinaga,
@@ -49,21 +50,98 @@ export class ConsumerRuntime {
             `${this.consumer.name}: given hash ${this.givenHash}`,
             { consumer: this.consumer.name, givenHash: this.givenHash }
         );
-        this.stream = await this.consumer.subscribe(this.j);
+        const stream = await this.consumer.subscribe(this.j);
+        this.stream = stream;
+        // The loop runs for the life of the stream and ends when `stop()`
+        // releases it. It reports its own failure, so there is nothing to await.
+        void this.iterate(stream);
         this.sweepTimer = setInterval(() => this.sweep(), this.consumer.sweepIntervalMs);
     }
 
-    /** One backstop pass over the outstanding set. */
-    private sweep(): void {
+    /**
+     * The stream path: an `added` change offers a row, a `removed` change
+     * retracts one.
+     *
+     * Each change is applied as it arrives. One save can produce both an
+     * `added` and a `removed` for the same `rowHash` in either order, and this
+     * loop neither buffers nor reorders to compensate — the gate's outcome for
+     * whichever arrives last is the state the map is left in.
+     *
+     * The change carries an `operation` alongside the row, and only the row is
+     * offered, so a row admitted by the stream is the same value as the one the
+     * sweep offers.
+     */
+    private async iterate(stream: RowStream<unknown>): Promise<void> {
+        try {
+            for await (const change of stream) {
+                const row = { result: change.result, rowHash: change.rowHash };
+                this.offer(change.rowHash, change.operation === "added"
+                    ? { kind: "added", row, at: Date.now() }
+                    : { kind: "removed" });
+            }
+        }
+        catch (error) {
+            this.logger.error(
+                `${this.consumer.name}: row stream failed`,
+                { consumer: this.consumer.name, error }
+            );
+        }
+    }
+
+    /**
+     * One backstop pass over the outstanding set.
+     *
+     * Every row the read returns is offered, and every row the map held when
+     * the read began and the read did not return is retracted. That retraction
+     * is how a `completed` row is released without a removal notification.
+     *
+     * The rows the map gained while the read was in flight are not in its
+     * verdict: the read is a snapshot of the moment it was taken, and a row
+     * discovered after it was taken was never omitted from it.
+     */
+    private async sweep(): Promise<void> {
+        const held = new Set(this.rows.keys());
+        const at = Date.now();
+        let rows: SpecificationRow<unknown>[];
+        try {
+            rows = await this.consumer.query(this.j);
+        }
+        catch (error) {
+            this.logger.error(
+                `${this.consumer.name}: sweep failed`,
+                { consumer: this.consumer.name, error }
+            );
+            return;
+        }
+        if (this.sweepTimer === undefined) {
+            // Discovery ended while the read was in flight. Nothing this sweep
+            // found may be admitted, and its verdict is stale.
+            return;
+        }
+        for (const row of rows) {
+            held.delete(row.rowHash);
+            this.offer(row.rowHash, {
+                kind: "swept",
+                row,
+                at,
+                maxAttempts: this.consumer.maxAttempts
+            });
+        }
+        for (const rowHash of held) {
+            this.offer(rowHash, { kind: "removed" });
+        }
+        this.lastSweep = { at: new Date(at), size: rows.length };
     }
 
     /**
      * Release the stream and cancel the sweep timer. Nothing is discovered
      * after this, and the process is free to exit once the drain finishes.
+     *
+     * The stopped stream is still held, because `status()` reads its `dropped`
+     * count through rather than keeping a copy of it.
      */
     endDiscovery(): void {
         this.stream?.stop();
-        this.stream = undefined;
         if (this.sweepTimer !== undefined) {
             clearInterval(this.sweepTimer);
             this.sweepTimer = undefined;
@@ -83,6 +161,28 @@ export class ConsumerRuntime {
     }
 
     /**
+     * The admission gate. Both discovery paths funnel through it, and it is the
+     * only place a row is admitted: the transition table decides, and a row is
+     * dispatched exactly when that decision moves it into `dispatching` from
+     * some other state. A sweep therefore cannot admit a row the stream would
+     * have rejected, because neither path decides anything of its own.
+     *
+     * It returns the attempt it started, and nothing when it started none.
+     */
+    private offer(rowHash: string, event: RowEvent<unknown>): Promise<void> | undefined {
+        const wasDispatching = this.rows.get(rowHash)?.phase === "dispatching";
+        const next = applyRowEvent(this.rows, rowHash, event);
+        if (next?.phase !== "dispatching" || wasDispatching) {
+            return undefined;
+        }
+        // A rejected attempt has already released its row, so discovery offers
+        // it again; the rejection is not this turn's to carry any further.
+        const running = this.runAttempt(rowHash, next.row);
+        running.catch(() => undefined);
+        return running;
+    }
+
+    /**
      * Admit a row and run its handler, holding the attempt while it runs so
      * `stop()` awaits exactly the rows the map reports as `dispatching`.
      *
@@ -91,7 +191,11 @@ export class ConsumerRuntime {
      * to offer again, and rejects the returned promise.
      */
     attempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
-        applyRowEvent(this.rows, rowHash, { kind: "added", row, at: Date.now() });
+        return this.offer(rowHash, { kind: "added", row, at: Date.now() })
+            ?? Promise.resolve();
+    }
+
+    private runAttempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
         const running = this.consumer.handle(row).then(
             () => {
                 applyRowEvent(this.rows, rowHash, { kind: "resolved" });
@@ -137,7 +241,9 @@ export class ConsumerRuntime {
         return {
             name: this.consumer.name,
             givenHash: this.givenHash,
-            ...countRows(this.rows)
+            ...countRows(this.rows),
+            dropped: this.stream?.dropped ?? 0,
+            ...(this.lastSweep === undefined ? {} : { lastSweep: this.lastSweep })
         };
     }
 }

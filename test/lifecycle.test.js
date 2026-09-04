@@ -217,7 +217,8 @@ test("status() reports each consumer's given hash and its counts, derived", asyn
         dispatching: 0,
         waiting: 0,
         completed: 0,
-        quarantined: 0
+        quarantined: 0,
+        dropped: 0
       },
       {
         name: "attendees",
@@ -225,7 +226,8 @@ test("status() reports each consumer's given hash and its counts, derived", asyn
         dispatching: 0,
         waiting: 0,
         completed: 0,
-        quarantined: 0
+        quarantined: 0,
+        dropped: 0
       }
     ]
   });

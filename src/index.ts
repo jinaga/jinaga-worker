@@ -14,6 +14,7 @@ export { Logger } from "./logger";
 export {
   Consumer,
   ConsumerOptions,
+  DEFAULT_MAX_ATTEMPTS,
   DEFAULT_SWEEP_INTERVAL_MS,
   defineConsumer
 } from "./consumer";

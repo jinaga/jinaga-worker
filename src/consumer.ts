@@ -40,6 +40,9 @@ export interface ConsumerOptions<T extends unknown[], U> {
 /** @see ConsumerOptions.sweepIntervalMs */
 export const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
 
+/** How many times a row is attempted before it is given up on. */
+export const DEFAULT_MAX_ATTEMPTS = 5;
+
 /**
  * A consumer, as a worker holds it.
  *
@@ -55,6 +58,9 @@ export interface Consumer {
     /** How long between backstop sweeps. */
     readonly sweepIntervalMs: number;
 
+    /** How many times a row is attempted before it is given up on. */
+    readonly maxAttempts: number;
+
     /**
      * The hash of the consumer's givens: `j.hash` of each, joined. A given that
      * differs by any field after a restart sends both discovery paths silently
@@ -64,6 +70,13 @@ export interface Consumer {
 
     /** Open the row stream over the outstanding set. */
     subscribe(j: Jinaga): Promise<RowStream<unknown>>;
+
+    /**
+     * Read the outstanding set for one backstop sweep. The rows carry the same
+     * `rowHash` the stream delivers, which is what lets one gate deduplicate
+     * both discovery paths.
+     */
+    query(j: Jinaga): Promise<SpecificationRow<unknown>[]>;
 
     /** Run the handler for one row. */
     handle(row: SpecificationRow<unknown>): Promise<void>;
@@ -82,11 +95,16 @@ export function defineConsumer<T extends unknown[], U>(
     return {
         name: options.name,
         sweepIntervalMs,
+        maxAttempts: DEFAULT_MAX_ATTEMPTS,
         givenHash: j => options.givens.map(given => j.hash(given as Fact)).join(","),
         subscribe: async j => {
             const args = [...options.givens, { capacity }] as [...T, RowStreamOptions];
             const stream = await j.subscribeRows(options.specification, ...args);
             return stream as RowStream<unknown>;
+        },
+        query: async j => {
+            const rows = await j.queryRows(options.specification, ...options.givens);
+            return rows as SpecificationRow<unknown>[];
         },
         handle: row => options.handle(row as SpecificationRow<U>)
     };

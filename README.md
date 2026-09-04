@@ -9,5 +9,7 @@ This repository is scaffolded for RFC #251 in `jinaga/jinaga.js`:
   (`queryRows`, `subscribeRows`) landed — see jinaga/jinaga.js#250
 - `defineConsumer` and `createWorker`: the consumer declaration and the worker
   lifecycle from [the specification](docs/durable-consumer-spec.md)
+- Discovery: the row stream and the backstop sweep, funnelled into one
+  admission gate and deduplicated on `rowHash`
 - CI workflow for build + test
 - Publish workflow scaffolded but intentionally disabled
