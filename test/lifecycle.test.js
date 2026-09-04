@@ -110,6 +110,28 @@ test("a handler still running at the deadline is abandoned without delaying stop
   handler.resolve();
 });
 
+test("an attempt is suppressed while the map holds an entry for the row", async () => {
+  const handler = deferred();
+  let handled = 0;
+  const worker = new WorkerHost(fakeJinaga(), {
+    consumers: [consumerOf("invitations", () => {
+      handled += 1;
+      return handler.promise;
+    })],
+    logger: recordingLogger()
+  });
+  const runtime = worker.runtimes[0];
+  const row = { result: {}, rowHash: "row-1" };
+
+  assert.notEqual(runtime.attempt("row-1", row), undefined);
+  assert.equal(runtime.attempt("row-1", row), undefined);
+  assert.equal(handled, 1);
+  assert.equal(worker.status().consumers[0].dispatching, 1);
+
+  handler.resolve();
+  await worker.stop();
+});
+
 test("stop() drops waiting rows rather than draining them", async () => {
   const worker = new WorkerHost(fakeJinaga(), {
     consumers: [consumerOf("invitations", async () => {})],

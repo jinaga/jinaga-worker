@@ -188,11 +188,13 @@ export class ConsumerRuntime {
      *
      * The row moves to `completed` when the handler resolves. A rejection
      * releases the row, which returns it to the outstanding set for discovery
-     * to offer again, and rejects the returned promise.
+     * to offer again, and rejects the returned attempt.
+     *
+     * An offer the map already holds an entry for is suppressed, and there is
+     * no attempt to return.
      */
-    attempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
-        return this.offer(rowHash, { kind: "added", row, at: Date.now() })
-            ?? Promise.resolve();
+    attempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> | undefined {
+        return this.offer(rowHash, { kind: "added", row, at: Date.now() });
     }
 
     private runAttempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
