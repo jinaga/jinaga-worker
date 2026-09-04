@@ -72,6 +72,7 @@ function controllableStream() {
 function fakeJinaga(streams) {
   return {
     hash: fact => `hash-of-${fact.id}`,
+    onDistributionDiagnostic: () => {},
     subscribeRows: async specification => streams[specification.name],
     queryRows: async () => []
   };

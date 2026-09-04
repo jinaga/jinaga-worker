@@ -29,7 +29,12 @@ const waiting = (attempts, retryAt, firstAttemptAt = 100) => ({
   retryAt
 });
 
-const completed = attempts => ({ phase: "completed", row: row("r"), attempts });
+const completed = (attempts, firstAttemptAt = 100) => ({
+  phase: "completed",
+  row: row("r"),
+  attempts,
+  firstAttemptAt
+});
 
 const quarantined = () => ({ phase: "quarantined", row: row("r") });
 
@@ -52,7 +57,7 @@ const table = [
     name: "dispatching, handler resolves, completed",
     from: dispatching(2),
     event: { kind: "resolved" },
-    to: { phase: "completed", row: row("r"), attempts: 2 }
+    to: { phase: "completed", row: row("r"), attempts: 2, firstAttemptAt: 100 }
   },
   {
     name: "dispatching, handler rejects below the attempt limit, waiting",
@@ -82,7 +87,7 @@ const table = [
     name: "completed, a sweep still returns the row below the attempt limit, dispatching",
     from: completed(2),
     event: { kind: "swept", row: row("r"), at: 500, maxAttempts: MAX },
-    to: { phase: "dispatching", row: row("r"), attempts: 3, firstAttemptAt: 500 }
+    to: { phase: "dispatching", row: row("r"), attempts: 3, firstAttemptAt: 100 }
   },
   {
     name: "completed, a sweep still returns the row at the attempt limit, quarantined",

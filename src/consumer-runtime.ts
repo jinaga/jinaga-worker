@@ -2,6 +2,7 @@ import { Jinaga, RowStream, SpecificationRow } from "jinaga";
 import { Consumer } from "./consumer";
 import { Limiter } from "./limiter";
 import { Logger } from "./logger";
+import { NoProgressEvent } from "./no-progress";
 import { backoffMs } from "./retry";
 import { applyRowEvent, countRows, RowEvent, RowStateMap } from "./row-state";
 import { ConsumerStatus } from "./status";
@@ -44,7 +45,8 @@ export class ConsumerRuntime {
         private readonly j: Jinaga,
         private readonly consumer: Consumer,
         limiter: Limiter,
-        private readonly logger: Logger
+        private readonly logger: Logger,
+        private readonly onNoProgress?: (event: NoProgressEvent) => void | Promise<void>
     ) {
         this.givenHash = consumer.givenHash(j);
         this.limiter = consumer.limiter ?? limiter;
@@ -199,7 +201,7 @@ export class ConsumerRuntime {
      * It returns the attempt it started, and nothing when it started none.
      */
     private offer(rowHash: string, event: RowEvent<unknown>): Promise<void> | undefined {
-        const wasDispatching = this.rows.get(rowHash)?.phase === "dispatching";
+        const previous = this.rows.get(rowHash);
         const next = applyRowEvent(this.rows, rowHash, event);
         if (next === undefined) {
             // The row left the outstanding set, so the retry it was due has
@@ -207,7 +209,14 @@ export class ConsumerRuntime {
             this.cancelRetry(rowHash);
             return undefined;
         }
-        if (next.phase !== "dispatching" || wasDispatching) {
+        if (next.phase === "quarantined" && previous?.phase === "completed") {
+            // The handler resolved for this row as many times as it is asked
+            // to, and the sweep still returns it. That is the one path to
+            // `stalled`, and it is the sweep that decides it.
+            this.exhausted(rowHash, previous, { kind: "stalled" });
+            return undefined;
+        }
+        if (next.phase !== "dispatching" || previous?.phase === "dispatching") {
             return undefined;
         }
         return this.runAttempt(rowHash, next.row);
@@ -310,6 +319,10 @@ export class ConsumerRuntime {
             retryAt: Date.now() + backoffMs(this.consumer.retry, state.attempts),
             maxAttempts: this.consumer.retry.maxAttempts
         });
+        if (next?.phase === "quarantined") {
+            this.exhausted(rowHash, state, { kind: "failed", error });
+            return;
+        }
         if (next?.phase !== "waiting") {
             return;
         }
@@ -325,6 +338,88 @@ export class ConsumerRuntime {
             this.retries.delete(rowHash);
             this.offer(rowHash, { kind: "retryDue" });
         }, next.retryAt - Date.now()));
+    }
+
+    /**
+     * A row has run out of attempts. Build the report and hand it on.
+     *
+     * The row is already `quarantined`: the transition that brought it here
+     * moved it, so nothing the application does from here can put it back in
+     * circulation. Every field of the event comes from the state the row was in
+     * when it was exhausted, which is why that state is passed in rather than
+     * read back.
+     */
+    private exhausted(
+        rowHash: string,
+        state: { row: SpecificationRow<unknown>; attempts: number; firstAttemptAt: number },
+        diagnosis: { kind: "failed"; error: unknown } | { kind: "stalled" }
+    ): void {
+        const noProgress = {
+            consumer: this.consumer.name,
+            result: state.row.result,
+            rowHash,
+            attempts: state.attempts,
+            elapsedMs: Date.now() - state.firstAttemptAt,
+            quarantineDepth: countRows(this.rows).quarantined
+        };
+        const event: NoProgressEvent = diagnosis.kind === "failed"
+            ? { ...noProgress, kind: "failed", error: diagnosis.error }
+            : { ...noProgress, kind: "stalled" };
+        // It runs on its own turns and is never awaited: whichever path
+        // exhausted the row has a loop to get back to.
+        void this.report(state.row, event);
+    }
+
+    /**
+     * Write the application's quarantine record, then emit the event once.
+     *
+     * Both callbacks are the application's, and both are bounded by
+     * `handlerTimeoutMs`, so neither can wedge the loop it is reporting on. A
+     * callback that fails is logged; the row stays quarantined and the report
+     * still goes out, because the failure of a write is not evidence that the
+     * row can make progress.
+     *
+     * The library's own line goes out first, so a slow callback does not delay
+     * the diagnostic. It names the consumer, which is what an operator follows
+     * back to the completion fact type a `stalled` row is missing.
+     */
+    private async report(
+        row: SpecificationRow<unknown>,
+        event: NoProgressEvent
+    ): Promise<void> {
+        this.logger.warn(
+            `${this.consumer.name}: ${event.kind} on ${event.rowHash} after ${event.attempts} attempts`,
+            { ...event }
+        );
+        if (this.consumer.quarantine !== undefined) {
+            try {
+                await withTimeout(
+                    this.consumer.quarantine(row, event),
+                    this.consumer.handlerTimeoutMs
+                );
+            }
+            catch (error) {
+                this.logger.error(
+                    `${this.consumer.name}: quarantine callback failed for ${event.rowHash}`,
+                    { consumer: this.consumer.name, rowHash: event.rowHash, error }
+                );
+            }
+        }
+        if (this.onNoProgress === undefined) {
+            return;
+        }
+        try {
+            await withTimeout(
+                Promise.resolve(this.onNoProgress(event)),
+                this.consumer.handlerTimeoutMs
+            );
+        }
+        catch (error) {
+            this.logger.error(
+                `${this.consumer.name}: onNoProgress failed for ${event.rowHash}`,
+                { consumer: this.consumer.name, rowHash: event.rowHash, error }
+            );
+        }
     }
 
     private cancelRetry(rowHash: string): void {

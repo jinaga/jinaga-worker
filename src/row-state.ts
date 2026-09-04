@@ -5,13 +5,15 @@ import { SpecificationRow } from "jinaga";
  *
  * Four phases for the four situations a row can be in. `attempts` and
  * `firstAttemptAt` appear on the phases where they govern something: the
- * attempt limit and the elapsed time a non-progress report carries. A
- * quarantined row is never attempted again, so it carries neither.
+ * attempt limit, and the elapsed time a non-progress report carries. A row
+ * reaches exhaustion from `dispatching` and from `completed` alike, so both
+ * carry them. A quarantined row is never attempted again and never reported
+ * again, so it carries neither.
  */
 export type RowState<U> =
     | { phase: "dispatching"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "waiting"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; retryAt: number }
-    | { phase: "completed"; row: SpecificationRow<U>; attempts: number }
+    | { phase: "completed"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "quarantined"; row: SpecificationRow<U> };
 
 /**
@@ -85,7 +87,12 @@ export function transition<U>(
     switch (current.phase) {
         case "dispatching":
             if (event.kind === "resolved") {
-                return { phase: "completed", row: current.row, attempts: current.attempts };
+                return {
+                    phase: "completed",
+                    row: current.row,
+                    attempts: current.attempts,
+                    firstAttemptAt: current.firstAttemptAt
+                };
             }
             if (event.kind === "rejected") {
                 return current.attempts < event.maxAttempts
@@ -114,12 +121,14 @@ export function transition<U>(
             }
             // A re-dispatch carries the sweep's projection, which is what the
             // handler will see. A quarantine keeps the one the handler saw.
+            // `firstAttemptAt` spans every cycle, as `attempts` does, so the
+            // elapsed time a stalled report carries covers all of them.
             return current.attempts < event.maxAttempts
                 ? {
                     phase: "dispatching",
                     row: event.row,
                     attempts: current.attempts + 1,
-                    firstAttemptAt: event.at
+                    firstAttemptAt: current.firstAttemptAt
                 }
                 : { phase: "quarantined", row: current.row };
         case "quarantined":

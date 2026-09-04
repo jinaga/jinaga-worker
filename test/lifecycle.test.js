@@ -11,6 +11,7 @@ const tenant = id => ({ type: "Test.Tenant", id });
 function fakeJinaga(streams = {}) {
   return {
     hash: fact => `hash-of-${fact.id}`,
+    onDistributionDiagnostic: () => {},
     subscribeRows: async specification => {
       const open = streams[specification.name];
       if (open === undefined) {
@@ -278,6 +279,7 @@ test("a consumer resolves the sweep interval and the stream capacity", async () 
   const requested = [];
   const j = {
     hash: fact => `hash-of-${fact.id}`,
+    onDistributionDiagnostic: () => {},
     subscribeRows: async (specification, ...args) => {
       requested.push(args);
       return openStream();

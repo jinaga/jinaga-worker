@@ -1,8 +1,10 @@
 import { Jinaga } from "jinaga";
 import { Consumer } from "./consumer";
 import { ConsumerRuntime } from "./consumer-runtime";
+import { distributionDiagnostics } from "./diagnostics";
 import { Limiter } from "./limiter";
 import { consoleLogger, Logger } from "./logger";
+import { NoProgressEvent } from "./no-progress";
 import { StopReport, WorkerStatus } from "./status";
 
 /**
@@ -25,6 +27,15 @@ export interface WorkerOptions {
 
     /** How long `stop()` waits for in-flight handlers before abandoning them. */
     shutdownTimeoutMs?: number;
+
+    /**
+     * What the process does about a row that stopped making progress.
+     *
+     * One handler for the whole worker. The event names the consumer it came
+     * from, so a reaction that differs per consumer is a `switch` inside this
+     * handler rather than a second place to register one.
+     */
+    onNoProgress?: (event: NoProgressEvent) => void | Promise<void>;
 
     /** Where the worker writes its diagnostics. */
     logger?: Logger;
@@ -54,13 +65,15 @@ export class WorkerHost implements Worker {
     readonly runtimes: readonly ConsumerRuntime[];
 
     private readonly shutdownTimeoutMs: number;
+    private readonly logger: Logger;
 
-    constructor(j: Jinaga, options: WorkerOptions) {
+    constructor(private readonly j: Jinaga, options: WorkerOptions) {
         const logger = options.logger ?? consoleLogger;
         const limiter = options.limiter ?? new Limiter(DEFAULT_CONCURRENCY);
+        this.logger = logger;
         this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
         this.runtimes = options.consumers.map(
-            consumer => new ConsumerRuntime(j, consumer, limiter, logger)
+            consumer => new ConsumerRuntime(j, consumer, limiter, logger, options.onNoProgress)
         );
     }
 
@@ -68,8 +81,15 @@ export class WorkerHost implements Worker {
      * Start every consumer. It resolves when every stream is running, and
      * rejects when any `subscribeRows` rejects, releasing the streams and
      * timers of the consumers that did start.
+     *
+     * The diagnostics channel is registered before the first subscribe, so a
+     * feed the replicator reports as `reactive` is logged rather than lost. A
+     * `reactive` decision is the subscription race and self-heals once the
+     * authorizing fact arrives; the structural denial that will not self-heal
+     * is what rejects here.
      */
     async start(): Promise<void> {
+        this.j.onDistributionDiagnostic(distributionDiagnostics(this.logger));
         try {
             for (const runtime of this.runtimes) {
                 await runtime.start();
