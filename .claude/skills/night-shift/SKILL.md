@@ -82,11 +82,17 @@ Each issue declares its dependencies. Honour them: a slice whose dependencies ha
 
 Layers of the chain may be worked concurrently, but only stacked: each one branches from the layer below and waits for that branch to exist (section 5). Two sessions taking different slices **both from `main`** produce conflicting patches for one design, because every issue from #3 to #8 touches `src/index.ts` and the same test tree. Stacked is the safe form of the same concurrency, and it is what a multi-dispatch sweep is for.
 
-An issue is **not available** when the layer below it is neither already merged nor being worked in this same sweep. Skip it and record the skip with that reason, naming the issue it waits on; it is not a claim conflict and should not be recorded as one.
+A layer is **available** when the one below it is in any of three states: already merged; being worked in this same sweep; or carrying an unmerged branch on `origin`, whether or not a pull request on it is still open. The third is the strongest of the three, because the branch is already there when the upper worker starts, so it never waits for one to appear.
+
+Keep the claim check and the dependency check apart. Section 2 asks whether *this* issue is already being worked, and an open pull request there means do not start a second session on it. That says nothing about the issue above it: a layer whose lower neighbour is claimed is released to stack on that neighbour's branch, not blocked by it.
+
+An issue whose lower neighbour is in none of the three states is **not available**. Skip it and record the skip with that reason, naming the issue it waits on; it is not a claim conflict and should not be recorded as one.
 
 ### How much to take
 
 There is no fixed budget, and you should not invent one silently. Take what you can carry through section 4's full bar. **Say in your report, and in every skip rationale that leans on it, what budget you chose and why.** A skip reason is only evidence if the constraint behind it is stated.
+
+Depth constrains a chain separately from the count. Where a sweep builds the branches itself, two new layers is what one sweep carries through to a pull request: a third layer waits on a branch two layers down and spends most of its session idle. A layer whose lower neighbour already has a branch on `origin` does not pay that cost, so count it against the budget and not against the depth.
 
 ## 4. Work the issue
 
