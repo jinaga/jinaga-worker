@@ -1,8 +1,16 @@
 import { Jinaga, RowStream, SpecificationRow } from "jinaga";
 import { Consumer } from "./consumer";
+import { Limiter } from "./limiter";
 import { Logger } from "./logger";
+import { backoffMs } from "./retry";
 import { applyRowEvent, countRows, RowEvent, RowStateMap } from "./row-state";
 import { ConsumerStatus } from "./status";
+import { withTimeout } from "./timeout";
+
+/** A promise that settles on a later turn, never on the caller's own. */
+function nextTurn(): Promise<void> {
+    return new Promise(resume => setTimeout(resume, 0));
+}
 
 /**
  * One consumer, running inside a worker.
@@ -20,7 +28,14 @@ export class ConsumerRuntime {
      */
     readonly givenHash: string;
 
+    /**
+     * The budget this consumer's attempts run under: its own when it declared
+     * one, and the worker's shared budget otherwise.
+     */
+    private readonly limiter: Limiter;
+
     private readonly inFlight = new Map<string, Promise<void>>();
+    private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
     private stream: RowStream<unknown> | undefined;
     private sweepTimer: ReturnType<typeof setInterval> | undefined;
     private lastSweep: { at: Date; size: number } | undefined;
@@ -28,13 +43,23 @@ export class ConsumerRuntime {
     constructor(
         private readonly j: Jinaga,
         private readonly consumer: Consumer,
+        limiter: Limiter,
         private readonly logger: Logger
     ) {
         this.givenHash = consumer.givenHash(j);
+        this.limiter = consumer.limiter ?? limiter;
     }
 
     get name(): string {
         return this.consumer.name;
+    }
+
+    /**
+     * Whether discovery is still running. The sweep timer is the one record of
+     * it, so nothing else has to be kept consistent with it.
+     */
+    private get discovering(): boolean {
+        return this.sweepTimer !== undefined;
     }
 
     /**
@@ -108,7 +133,7 @@ export class ConsumerRuntime {
         const at = Date.now();
         try {
             const rows = await this.consumer.query(this.j);
-            if (this.sweepTimer === undefined) {
+            if (!this.discovering) {
                 // Discovery ended while the read was in flight. Nothing this
                 // sweep found may be admitted, and its verdict is stale.
                 return;
@@ -119,7 +144,7 @@ export class ConsumerRuntime {
                     kind: "swept",
                     row,
                     at,
-                    maxAttempts: this.consumer.maxAttempts
+                    maxAttempts: this.consumer.retry.maxAttempts
                 });
             }
             for (const rowHash of held) {
@@ -151,12 +176,14 @@ export class ConsumerRuntime {
     }
 
     /**
-     * Drop every row waiting to be retried. A waiting row has no attempt to
-     * drain, and the next process rediscovers it.
+     * Drop every row waiting to be retried, and cancel the timer that would
+     * have re-attempted it. A waiting row has no attempt to drain, and the next
+     * process rediscovers it.
      */
     dropWaiting(): void {
         for (const [rowHash, state] of this.rows) {
             if (state.phase === "waiting") {
+                this.cancelRetry(rowHash);
                 applyRowEvent(this.rows, rowHash, { kind: "removed" });
             }
         }
@@ -174,23 +201,24 @@ export class ConsumerRuntime {
     private offer(rowHash: string, event: RowEvent<unknown>): Promise<void> | undefined {
         const wasDispatching = this.rows.get(rowHash)?.phase === "dispatching";
         const next = applyRowEvent(this.rows, rowHash, event);
-        if (next?.phase !== "dispatching" || wasDispatching) {
+        if (next === undefined) {
+            // The row left the outstanding set, so the retry it was due has
+            // nothing left to re-attempt.
+            this.cancelRetry(rowHash);
             return undefined;
         }
-        // A rejected attempt has already released its row, so discovery offers
-        // it again; the rejection is not this turn's to carry any further.
-        const running = this.runAttempt(rowHash, next.row);
-        running.catch(() => undefined);
-        return running;
+        if (next.phase !== "dispatching" || wasDispatching) {
+            return undefined;
+        }
+        return this.runAttempt(rowHash, next.row);
     }
 
     /**
-     * Admit a row and run its handler, holding the attempt while it runs so
+     * Admit a row and dispatch it, holding the attempt while it runs so
      * `stop()` awaits exactly the rows the map reports as `dispatching`.
      *
-     * The row moves to `completed` when the handler resolves. A rejection
-     * releases the row, which returns it to the outstanding set for discovery
-     * to offer again, and rejects the returned attempt.
+     * The row moves to `completed` when the handler resolves, and to `waiting`
+     * or `quarantined` when it rejects, on the terms its retry policy sets.
      *
      * An offer the map already holds an entry for is suppressed, and there is
      * no attempt to return.
@@ -199,37 +227,93 @@ export class ConsumerRuntime {
         return this.offer(rowHash, { kind: "added", row, at: Date.now() });
     }
 
+    /**
+     * One attempt at one row, on a turn of its own.
+     *
+     * The first `await` is what keeps the handler off the notification turn:
+     * whichever discovery path offered the row has returned before the handler
+     * is called. A slot is held for the handler alone and released when it
+     * settles, so the backoff wait that may follow holds nothing.
+     *
+     * A handler that throws where it could have rejected is the same failure
+     * and reaches the map by the same path, because it throws inside this
+     * attempt rather than on the caller's turn.
+     *
+     * The attempt settles either way. `stop()` awaits it to decide what
+     * drained, and a rejection is the map's business rather than the caller's.
+     */
     private runAttempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
-        // A handler that throws where it could have rejected is the same
-        // failure, and it reaches the map by the same path. Taking it here is
-        // what keeps a throw from unwinding the caller: the stream's loop would
-        // end, and discovery with it.
-        let handled: Promise<void>;
-        try {
-            handled = this.consumer.handle(row);
-        }
-        catch (error) {
-            handled = Promise.reject(error);
-        }
-        const running = handled.then(
-            () => {
-                applyRowEvent(this.rows, rowHash, { kind: "resolved" });
-            },
-            error => {
-                applyRowEvent(this.rows, rowHash, { kind: "removed" });
-                throw error;
-            }
-        );
-        const settled: Promise<void> = running.then(
-            () => undefined,
-            () => undefined
-        ).then(() => {
-            if (this.inFlight.get(rowHash) === settled) {
+        const attempt = this.dispatch(rowHash, row).then(() => {
+            if (this.inFlight.get(rowHash) === attempt) {
                 this.inFlight.delete(rowHash);
             }
         });
-        this.inFlight.set(rowHash, settled);
-        return running;
+        this.inFlight.set(rowHash, attempt);
+        return attempt;
+    }
+
+    private async dispatch(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
+        await nextTurn();
+        try {
+            await this.limiter.run(() => withTimeout(
+                this.consumer.handle(row),
+                this.consumer.handlerTimeoutMs
+            ));
+        }
+        catch (error) {
+            this.rejectAttempt(rowHash, error);
+            return;
+        }
+        applyRowEvent(this.rows, rowHash, { kind: "resolved" });
+    }
+
+    /**
+     * Account for an attempt that rejected, a handler that outran its deadline
+     * included. The policy decides how long the row waits and how many times it
+     * is asked; this reads that value and schedules the wait it names.
+     *
+     * The row is quarantined instead once its attempts are exhausted, which the
+     * transition table decides from the same policy.
+     */
+    private rejectAttempt(rowHash: string, error: unknown): void {
+        const state = this.rows.get(rowHash);
+        if (state?.phase !== "dispatching") {
+            // The row left the outstanding set, or was re-admitted, while the
+            // handler ran. Either way this attempt has nothing left to report.
+            return;
+        }
+        this.logger.warn(
+            `${this.consumer.name}: attempt ${state.attempts} failed for ${rowHash}`,
+            { consumer: this.consumer.name, rowHash, attempts: state.attempts, error }
+        );
+        const next = applyRowEvent(this.rows, rowHash, {
+            kind: "rejected",
+            retryAt: Date.now() + backoffMs(this.consumer.retry, state.attempts),
+            maxAttempts: this.consumer.retry.maxAttempts
+        });
+        if (next?.phase !== "waiting") {
+            return;
+        }
+        if (!this.discovering) {
+            // Discovery has ended, so nothing will offer this row again. Drop
+            // it as `stop()` drops the rows already waiting.
+            applyRowEvent(this.rows, rowHash, { kind: "removed" });
+            return;
+        }
+        // The wait is read from the state that records it, so the row is
+        // re-attempted when the map says it is due.
+        this.retries.set(rowHash, setTimeout(() => {
+            this.retries.delete(rowHash);
+            this.offer(rowHash, { kind: "retryDue" });
+        }, next.retryAt - Date.now()));
+    }
+
+    private cancelRetry(rowHash: string): void {
+        const timer = this.retries.get(rowHash);
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            this.retries.delete(rowHash);
+        }
     }
 
     /** The rows this consumer is dispatching right now. */

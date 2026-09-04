@@ -1,6 +1,7 @@
 import { Jinaga } from "jinaga";
 import { Consumer } from "./consumer";
 import { ConsumerRuntime } from "./consumer-runtime";
+import { Limiter } from "./limiter";
 import { consoleLogger, Logger } from "./logger";
 import { StopReport, WorkerStatus } from "./status";
 
@@ -15,6 +16,13 @@ export interface WorkerOptions {
     /** The consumers this worker runs. The set is fixed at construction. */
     consumers: readonly Consumer[];
 
+    /**
+     * The concurrency budget every consumer shares, sized to the resources the
+     * whole process contends for. Adding a consumer must not raise the total
+     * pressure, so a consumer that needs a budget of its own declares one.
+     */
+    limiter?: Limiter;
+
     /** How long `stop()` waits for in-flight handlers before abandoning them. */
     shutdownTimeoutMs?: number;
 
@@ -24,6 +32,9 @@ export interface WorkerOptions {
 
 /** @see WorkerOptions.shutdownTimeoutMs */
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
+
+/** The size of the shared budget when the worker is given none. */
+export const DEFAULT_CONCURRENCY = 8;
 
 export interface Worker {
     /** Subscribe, sweep, and begin dispatching. */
@@ -46,9 +57,10 @@ export class WorkerHost implements Worker {
 
     constructor(j: Jinaga, options: WorkerOptions) {
         const logger = options.logger ?? consoleLogger;
+        const limiter = options.limiter ?? new Limiter(DEFAULT_CONCURRENCY);
         this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
         this.runtimes = options.consumers.map(
-            consumer => new ConsumerRuntime(j, consumer, logger)
+            consumer => new ConsumerRuntime(j, consumer, limiter, logger)
         );
     }
 
