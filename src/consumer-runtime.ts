@@ -1,7 +1,7 @@
 import { Jinaga, RowStream, SpecificationRow } from "jinaga";
 import { Consumer } from "./consumer";
 import { Logger } from "./logger";
-import { applyRowEvent, countRows, RowStateMap } from "./row-state";
+import { applyRowEvent, countRows, isAdmissible, RowStateMap } from "./row-state";
 import { ConsumerStatus } from "./status";
 
 /**
@@ -88,9 +88,15 @@ export class ConsumerRuntime {
      *
      * The row moves to `completed` when the handler resolves. A rejection
      * releases the row, which returns it to the outstanding set for discovery
-     * to offer again, and rejects the returned promise.
+     * to offer again, and rejects the returned attempt.
+     *
+     * An offer the map already holds an entry for is suppressed, and there is
+     * no attempt to return.
      */
-    attempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
+    attempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> | undefined {
+        if (!isAdmissible(this.rows, rowHash)) {
+            return undefined;
+        }
         applyRowEvent(this.rows, rowHash, { kind: "added", row, at: Date.now() });
         const running = this.consumer.handle(row).then(
             () => {
