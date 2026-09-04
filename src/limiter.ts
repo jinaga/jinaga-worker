@@ -12,7 +12,11 @@ export class Limiter {
     private running = 0;
     private readonly queue: (() => void)[] = [];
 
-    constructor(private readonly max: number) {}
+    constructor(private readonly max: number) {
+        if (!Number.isInteger(max) || max <= 0) {
+            throw new Error("Limiter max must be a positive integer.");
+        }
+    }
 
     /** Work running right now. */
     get inFlight(): number {
