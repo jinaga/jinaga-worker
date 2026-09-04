@@ -14,10 +14,19 @@ export { Logger } from "./logger";
 export {
   Consumer,
   ConsumerOptions,
-  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_HANDLER_TIMEOUT_MS,
   DEFAULT_SWEEP_INTERVAL_MS,
   defineConsumer
 } from "./consumer";
+
+export { Limiter } from "./limiter";
+
+export {
+  DEFAULT_RETRY_POLICY,
+  RetryPolicy
+} from "./retry";
+
+export { TimeoutError } from "./timeout";
 
 export {
   ConsumerStatus,
@@ -27,6 +36,7 @@ export {
 
 export {
   createWorker,
+  DEFAULT_CONCURRENCY,
   DEFAULT_SHUTDOWN_TIMEOUT_MS,
   Worker,
   WorkerOptions

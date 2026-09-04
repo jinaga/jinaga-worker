@@ -149,6 +149,17 @@ async function quiesce() {
   }
 }
 
+/** Wait for a state the consumer reaches on its own turns. */
+async function until(condition, what) {
+  for (let turn = 0; turn < 10_000; turn += 1) {
+    if (condition()) {
+      return;
+    }
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.fail(what);
+}
+
 function workerOver(t, stream, query, handle, options = {}) {
   const worker = new WorkerHost(fakeJinaga(stream, query), {
     consumers: [
@@ -302,7 +313,7 @@ test("a row offered by both paths in the same window is admitted once", { timeou
 
   await worker.start();
   await stream.push(added("r1"));
-  assert.equal(handle.handled.length, 1);
+  await handle.reaching(1);
 
   // The sweep offers the same row while the stream's attempt is still running.
   await nextSweep(worker);
@@ -344,11 +355,13 @@ test("a sweep that omits a row releases it", { timeout: DEADLINE_MS }, async t =
 
   await worker.start();
   await stream.push(added("r1"));
-  await quiesce();
 
   // The handler resolved, so nothing removed the row from the map. Only a
   // sweep that no longer returns it does that.
-  assert.equal(worker.status().consumers[0].completed, 1);
+  await until(
+    () => worker.status().consumers[0].completed === 1,
+    "the handled row was never completed"
+  );
 
   query.returns([]);
   await nextSweep(worker);
@@ -444,13 +457,16 @@ test("an added and a removed for the same row leave the map in the state the tab
     if (order[1] === "removed") {
       // Applied last: a removed clears the entry from any phase.
       assert.equal(rows.size, 0, `${order.join(" then ")} left an entry behind`);
-      assert.equal(handle.handled.length, 1);
     }
     else {
       // Applied last: the added finds no entry, so it is admitted.
       assert.equal(rows.get("r1").phase, "dispatching", `${order.join(" then ")}`);
-      assert.equal(handle.handled.length, 1);
     }
+    // The admission stands whichever order it arrived in, so the row is
+    // dispatched on its own turn either way.
+    await handle.reaching(1);
+    await quiesce();
+    assert.equal(handle.handled.length, 1);
 
     handler.resolve();
     await worker.stop();
@@ -465,24 +481,34 @@ test("a handler that throws where it could reject leaves discovery running", { t
   const stream = controllableStream();
   const query = controllableQuery([]);
   const thrown = [];
-  // Not an async function: it throws on the caller's own turn rather than
+  // Not an async function: it throws on its dispatching turn rather than
   // returning a rejected promise.
   const handle = rowValue => {
     thrown.push(rowValue.rowHash);
     throw new Error("handler threw");
   };
-  const worker = workerOver(t, stream, query, handle);
+  // One attempt per row, so what `thrown` records is what discovery offered.
+  const worker = workerOver(t, stream, query, handle, {
+    retry: { maxAttempts: 1, baseMs: 0, capMs: 0 }
+  });
+
+  const reaching = count => new Promise(resolve => {
+    const check = () => thrown.length >= count ? resolve() : setImmediate(check);
+    check();
+  });
 
   await worker.start();
   await stream.push(added("r1"));
 
   // The stream's loop survived it, so a later change is still discovered.
   await stream.push(added("r2"));
+  await reaching(2);
   assert.deepEqual(thrown, ["r1", "r2"]);
 
   // And so does the sweep, whose offers run the same handler.
   query.returns([row("r3")]);
   await nextSweep(worker);
+  await reaching(3);
   assert.ok(thrown.includes("r3"));
 
   await worker.stop();

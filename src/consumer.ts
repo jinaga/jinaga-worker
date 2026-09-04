@@ -7,6 +7,8 @@ import {
     SpecificationOf,
     SpecificationRow
 } from "jinaga";
+import { Limiter } from "./limiter";
+import { DEFAULT_RETRY_POLICY, RetryPolicy } from "./retry";
 
 /**
  * What a caller declares about one consumer.
@@ -30,8 +32,17 @@ export interface ConsumerOptions<T extends unknown[], U> {
     /** What the consumer does with a row. */
     handle: (row: SpecificationRow<U>) => Promise<void>;
 
+    /** A private concurrency budget in place of the worker's shared one. */
+    limiter?: Limiter;
+
+    /** How patiently a rejected row is re-attempted. */
+    retry?: RetryPolicy;
+
     /** How long between backstop sweeps. */
     sweepIntervalMs?: number;
+
+    /** How long one attempt at a row may take before it counts as rejected. */
+    handlerTimeoutMs?: number;
 
     /** The row stream's buffer bound, beyond which changes are dropped. */
     capacity?: number;
@@ -40,8 +51,8 @@ export interface ConsumerOptions<T extends unknown[], U> {
 /** @see ConsumerOptions.sweepIntervalMs */
 export const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
 
-/** How many times a row is attempted before it is given up on. */
-export const DEFAULT_MAX_ATTEMPTS = 5;
+/** @see ConsumerOptions.handlerTimeoutMs */
+export const DEFAULT_HANDLER_TIMEOUT_MS = 30_000;
 
 /**
  * A consumer, as a worker holds it.
@@ -55,11 +66,20 @@ export interface Consumer {
     /** The consumer's name, as it appears in status and diagnostics. */
     readonly name: string;
 
+    /**
+     * This consumer's own concurrency budget, when it has one. A consumer
+     * without one runs under the worker's shared budget.
+     */
+    readonly limiter?: Limiter;
+
+    /** How patiently a rejected row is re-attempted. */
+    readonly retry: RetryPolicy;
+
     /** How long between backstop sweeps. */
     readonly sweepIntervalMs: number;
 
-    /** How many times a row is attempted before it is given up on. */
-    readonly maxAttempts: number;
+    /** How long one attempt at a row may take before it counts as rejected. */
+    readonly handlerTimeoutMs: number;
 
     /**
      * The hash of the consumer's givens: `j.hash` of each, joined. A given that
@@ -94,8 +114,10 @@ export function defineConsumer<T extends unknown[], U>(
     const capacity = options.capacity ?? DEFAULT_ROW_STREAM_CAPACITY;
     return {
         name: options.name,
+        limiter: options.limiter,
+        retry: options.retry ?? DEFAULT_RETRY_POLICY,
         sweepIntervalMs,
-        maxAttempts: DEFAULT_MAX_ATTEMPTS,
+        handlerTimeoutMs: options.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS,
         givenHash: j => options.givens.map(given => j.hash(given as Fact)).join(","),
         subscribe: async j => {
             const args = [...options.givens, { capacity }] as [...T, RowStreamOptions];

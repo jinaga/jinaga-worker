@@ -58,6 +58,12 @@ const consumerOf = (name, handle, options = {}) => defineConsumer({
   ...options
 });
 
+/**
+ * A later turn of the event loop. A dispatch scheduled before this one runs
+ * first, so what has not happened by here was not scheduled.
+ */
+const nextTurn = () => new Promise(resolve => setTimeout(resolve, 0));
+
 const timerCount = () =>
   process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;
 
@@ -125,8 +131,13 @@ test("an attempt is suppressed while the map holds an entry for the row", async 
 
   assert.notEqual(runtime.attempt("row-1", row), undefined);
   assert.equal(runtime.attempt("row-1", row), undefined);
-  assert.equal(handled, 1);
+  assert.equal(handled, 0, "the handler ran on the offering turn");
   assert.equal(worker.status().consumers[0].dispatching, 1);
+
+  // The one admission dispatches on a turn of its own, and the suppressed
+  // offer has nothing of its own to dispatch.
+  await nextTurn();
+  assert.equal(handled, 1);
 
   handler.resolve();
   await worker.stop();
