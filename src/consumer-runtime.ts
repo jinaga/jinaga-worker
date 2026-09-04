@@ -55,7 +55,7 @@ export class ConsumerRuntime {
         // The loop runs for the life of the stream and ends when `stop()`
         // releases it. It reports its own failure, so there is nothing to await.
         void this.iterate(stream);
-        this.sweepTimer = setInterval(() => this.sweep(), this.consumer.sweepIntervalMs);
+        this.sweepTimer = setInterval(() => void this.sweep(), this.consumer.sweepIntervalMs);
     }
 
     /**
@@ -98,39 +98,41 @@ export class ConsumerRuntime {
      * The rows the map gained while the read was in flight are not in its
      * verdict: the read is a snapshot of the moment it was taken, and a row
      * discovered after it was taken was never omitted from it.
+     *
+     * A sweep reports its own failure and settles either way, so the timer that
+     * schedules it has no rejection to handle and one pass that fails does not
+     * end the series.
      */
     private async sweep(): Promise<void> {
         const held = new Set(this.rows.keys());
         const at = Date.now();
-        let rows: SpecificationRow<unknown>[];
         try {
-            rows = await this.consumer.query(this.j);
+            const rows = await this.consumer.query(this.j);
+            if (this.sweepTimer === undefined) {
+                // Discovery ended while the read was in flight. Nothing this
+                // sweep found may be admitted, and its verdict is stale.
+                return;
+            }
+            for (const row of rows) {
+                held.delete(row.rowHash);
+                this.offer(row.rowHash, {
+                    kind: "swept",
+                    row,
+                    at,
+                    maxAttempts: this.consumer.maxAttempts
+                });
+            }
+            for (const rowHash of held) {
+                this.offer(rowHash, { kind: "removed" });
+            }
+            this.lastSweep = { at: new Date(at), size: rows.length };
         }
         catch (error) {
             this.logger.error(
                 `${this.consumer.name}: sweep failed`,
                 { consumer: this.consumer.name, error }
             );
-            return;
         }
-        if (this.sweepTimer === undefined) {
-            // Discovery ended while the read was in flight. Nothing this sweep
-            // found may be admitted, and its verdict is stale.
-            return;
-        }
-        for (const row of rows) {
-            held.delete(row.rowHash);
-            this.offer(row.rowHash, {
-                kind: "swept",
-                row,
-                at,
-                maxAttempts: this.consumer.maxAttempts
-            });
-        }
-        for (const rowHash of held) {
-            this.offer(rowHash, { kind: "removed" });
-        }
-        this.lastSweep = { at: new Date(at), size: rows.length };
     }
 
     /**
@@ -198,7 +200,18 @@ export class ConsumerRuntime {
     }
 
     private runAttempt(rowHash: string, row: SpecificationRow<unknown>): Promise<void> {
-        const running = this.consumer.handle(row).then(
+        // A handler that throws where it could have rejected is the same
+        // failure, and it reaches the map by the same path. Taking it here is
+        // what keeps a throw from unwinding the caller: the stream's loop would
+        // end, and discovery with it.
+        let handled: Promise<void>;
+        try {
+            handled = this.consumer.handle(row);
+        }
+        catch (error) {
+            handled = Promise.reject(error);
+        }
+        const running = handled.then(
             () => {
                 applyRowEvent(this.rows, rowHash, { kind: "resolved" });
             },

@@ -122,12 +122,19 @@ function recordingHandler(respond = async () => {}) {
  * Wait for the next sweep to finish. `lastSweep` is written at the end of a
  * sweep, so a change in it is the sweep's own completion rather than a delay
  * chosen by the test.
+ *
+ * The comparison is by value, so what it waits for is a sweep that reported
+ * something different rather than a `status()` that returned a different
+ * object.
  */
+const sweepMark = sweep =>
+  sweep === undefined ? "none" : `${sweep.at.getTime()}:${sweep.size}`;
+
 async function nextSweep(worker, index = 0) {
   const lastSweep = () => worker.status().consumers[index].lastSweep;
-  const before = lastSweep();
+  const before = sweepMark(lastSweep());
   for (let turn = 0; turn < 10_000; turn += 1) {
-    if (lastSweep() !== before) {
+    if (sweepMark(lastSweep()) !== before) {
       return lastSweep();
     }
     await new Promise(resolve => setImmediate(resolve));
@@ -142,8 +149,8 @@ async function quiesce() {
   }
 }
 
-function workerOver(stream, query, handle, options = {}) {
-  return new WorkerHost(fakeJinaga(stream, query), {
+function workerOver(t, stream, query, handle, options = {}) {
+  const worker = new WorkerHost(fakeJinaga(stream, query), {
     consumers: [
       defineConsumer({
         name: "invitations",
@@ -157,6 +164,10 @@ function workerOver(stream, query, handle, options = {}) {
     shutdownTimeoutMs: 10,
     logger: silentLogger
   });
+  // Unconditional, so an assertion that fails still releases the sweep timer
+  // and the run ends in a failure rather than in a hang.
+  t.after(() => worker.stop());
+  return worker;
 }
 
 const added = rowHash => ({ ...row(rowHash), operation: "added" });
@@ -202,7 +213,7 @@ const outstanding = model.given(Tenant).match((tenant, facts) =>
     .join(item => item.tenant, tenant)
     .notExists(item => facts.ofType(ItemHandled).join(handled => handled.item, item)));
 
-test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE_MS }, async () => {
+test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE_MS }, async t => {
   const acme = new Tenant("acme");
   const j = JinagaTest.create({ model, initialState: [acme] });
   const backlog = await j.fact(new Item(acme, "backlog"));
@@ -221,6 +232,7 @@ test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE
     ],
     logger: silentLogger
   });
+  t.after(() => worker.stop());
 
   await worker.start();
   await handle.reaching(1);
@@ -238,15 +250,16 @@ test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE
   assert.deepEqual(await j.queryRows(outstanding, acme), []);
 
   // Both facts are the application's; the library wrote neither.
-  assert.equal((await j.query(model.given(Tenant).match((t, facts) =>
-    facts.ofType(ItemHandled).join(h => h.item.tenant, t)), acme)).length, 2);
+  const completions = model.given(Tenant).match((owner, facts) =>
+    facts.ofType(ItemHandled).join(handled => handled.item.tenant, owner));
+  assert.equal((await j.query(completions, acme)).length, 2);
 
   await worker.stop();
   void backlog;
   void later;
 });
 
-test("the backstop sweep reads the outstanding set through queryRows", { timeout: DEADLINE_MS }, async () => {
+test("the backstop sweep reads the outstanding set through queryRows", { timeout: DEADLINE_MS }, async t => {
   const acme = new Tenant("acme");
   const j = JinagaTest.create({ model, initialState: [acme] });
   await j.fact(new Item(acme, "outstanding"));
@@ -267,6 +280,7 @@ test("the backstop sweep reads the outstanding set through queryRows", { timeout
     shutdownTimeoutMs: 10,
     logger: silentLogger
   });
+  t.after(() => worker.stop());
 
   await worker.start();
   const sweep = await nextSweep(worker);
@@ -279,12 +293,12 @@ test("the backstop sweep reads the outstanding set through queryRows", { timeout
 // The gate, driven change by change.
 // ---------------------------------------------------------------------------
 
-test("a row offered by both paths in the same window is admitted once", { timeout: DEADLINE_MS }, async () => {
+test("a row offered by both paths in the same window is admitted once", { timeout: DEADLINE_MS }, async t => {
   const stream = controllableStream();
   const query = controllableQuery([row("r1")]);
   const handler = deferred();
   const handle = recordingHandler(() => handler.promise);
-  const worker = workerOver(stream, query, handle);
+  const worker = workerOver(t, stream, query, handle);
 
   await worker.start();
   await stream.push(added("r1"));
@@ -302,11 +316,11 @@ test("a row offered by both paths in the same window is admitted once", { timeou
   await worker.stop();
 });
 
-test("a removed change releases the row from the map", { timeout: DEADLINE_MS }, async () => {
+test("a removed change releases the row from the map", { timeout: DEADLINE_MS }, async t => {
   const stream = controllableStream();
   const query = controllableQuery([row("r1")]);
   const handler = deferred();
-  const worker = workerOver(stream, query, recordingHandler(() => handler.promise), {
+  const worker = workerOver(t, stream, query, recordingHandler(() => handler.promise), {
     sweepIntervalMs: 60_000
   });
 
@@ -323,10 +337,10 @@ test("a removed change releases the row from the map", { timeout: DEADLINE_MS },
   await worker.stop();
 });
 
-test("a sweep that omits a row releases it", { timeout: DEADLINE_MS }, async () => {
+test("a sweep that omits a row releases it", { timeout: DEADLINE_MS }, async t => {
   const stream = controllableStream();
   const query = controllableQuery([row("r1")]);
-  const worker = workerOver(stream, query, recordingHandler());
+  const worker = workerOver(t, stream, query, recordingHandler());
 
   await worker.start();
   await stream.push(added("r1"));
@@ -348,11 +362,11 @@ test("a sweep that omits a row releases it", { timeout: DEADLINE_MS }, async () 
   await worker.stop();
 });
 
-test("lastSweep reflects the most recent sweep and is absent before the first", { timeout: DEADLINE_MS }, async () => {
+test("lastSweep reflects the most recent sweep and is absent before the first", { timeout: DEADLINE_MS }, async t => {
   const stream = controllableStream();
   const query = controllableQuery([row("r1"), row("r2")]);
   const handler = deferred();
-  const worker = workerOver(stream, query, recordingHandler(() => handler.promise));
+  const worker = workerOver(t, stream, query, recordingHandler(() => handler.promise));
 
   assert.equal(worker.status().consumers[0].lastSweep, undefined);
   await worker.start();
@@ -371,10 +385,10 @@ test("lastSweep reflects the most recent sweep and is absent before the first", 
   await worker.stop();
 });
 
-test("the sweep timer stops on stop()", { timeout: DEADLINE_MS }, async () => {
+test("the sweep timer stops on stop()", { timeout: DEADLINE_MS }, async t => {
   const stream = controllableStream();
   const query = controllableQuery([]);
-  const worker = workerOver(stream, query, recordingHandler());
+  const worker = workerOver(t, stream, query, recordingHandler());
 
   await worker.start();
   await nextSweep(worker);
@@ -387,7 +401,7 @@ test("the sweep timer stops on stop()", { timeout: DEADLINE_MS }, async () => {
   assert.equal(stream.stopped, 1);
 });
 
-test("a sweep in flight when stop() lands admits nothing", { timeout: DEADLINE_MS }, async () => {
+test("a sweep in flight when stop() lands admits nothing", { timeout: DEADLINE_MS }, async t => {
   const stream = controllableStream();
   const reading = deferred();
   const query = controllableQuery([row("r1")]);
@@ -397,7 +411,7 @@ test("a sweep in flight when stop() lands admits nothing", { timeout: DEADLINE_M
     return query.rows;
   };
   const handle = recordingHandler();
-  const worker = workerOver(stream, query, handle);
+  const worker = workerOver(t, stream, query, handle);
 
   await worker.start();
   while (query.calls === 0) {
@@ -413,13 +427,13 @@ test("a sweep in flight when stop() lands admits nothing", { timeout: DEADLINE_M
   assert.equal(worker.status().consumers[0].lastSweep, undefined);
 });
 
-test("an added and a removed for the same row leave the map in the state the table prescribes", { timeout: DEADLINE_MS }, async () => {
+test("an added and a removed for the same row leave the map in the state the table prescribes", { timeout: DEADLINE_MS }, async t => {
   for (const order of [["added", "removed"], ["removed", "added"]]) {
     const stream = controllableStream();
     const query = controllableQuery([]);
     const handler = deferred();
     const handle = recordingHandler(() => handler.promise);
-    const worker = workerOver(stream, query, handle, { sweepIntervalMs: 60_000 });
+    const worker = workerOver(t, stream, query, handle, { sweepIntervalMs: 60_000 });
 
     await worker.start();
     for (const operation of order) {
@@ -443,10 +457,44 @@ test("an added and a removed for the same row leave the map in the state the tab
   }
 });
 
-test("status reads the stream's dropped count through, and keeps reading it after stop()", { timeout: DEADLINE_MS }, async () => {
+test("a handler that throws where it could reject leaves discovery running", { timeout: DEADLINE_MS }, async t => {
+  const rejections = [];
+  const onRejection = error => rejections.push(error);
+  process.on("unhandledRejection", onRejection);
+
   const stream = controllableStream();
   const query = controllableQuery([]);
-  const worker = workerOver(stream, query, recordingHandler(), { sweepIntervalMs: 60_000 });
+  const thrown = [];
+  // Not an async function: it throws on the caller's own turn rather than
+  // returning a rejected promise.
+  const handle = rowValue => {
+    thrown.push(rowValue.rowHash);
+    throw new Error("handler threw");
+  };
+  const worker = workerOver(t, stream, query, handle);
+
+  await worker.start();
+  await stream.push(added("r1"));
+
+  // The stream's loop survived it, so a later change is still discovered.
+  await stream.push(added("r2"));
+  assert.deepEqual(thrown, ["r1", "r2"]);
+
+  // And so does the sweep, whose offers run the same handler.
+  query.returns([row("r3")]);
+  await nextSweep(worker);
+  assert.ok(thrown.includes("r3"));
+
+  await worker.stop();
+  await quiesce();
+  process.off("unhandledRejection", onRejection);
+  assert.deepEqual(rejections, [], "a thrown handler reached the process as an unhandled rejection");
+});
+
+test("status reads the stream's dropped count through, and keeps reading it after stop()", { timeout: DEADLINE_MS }, async t => {
+  const stream = controllableStream();
+  const query = controllableQuery([]);
+  const worker = workerOver(t, stream, query, recordingHandler(), { sweepIntervalMs: 60_000 });
 
   await worker.start();
   assert.equal(worker.status().consumers[0].dropped, 0);
