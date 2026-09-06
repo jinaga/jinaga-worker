@@ -15,7 +15,7 @@ The sibling protocol in `jinaga/jinaga.js` was written for a maintained library 
 
 - **There is nothing to reproduce.** An issue here does not describe a defect. Section 4 replaces "reproduce first" with the spec section and the issue's own conformance criteria.
 - **Almost everything stacks.** The issues form one dependency chain — #3 → #4 → #5 → #6 → #7 → #8 — declared in each issue's *Depends on*. Sequencing is read off the issues, not inferred from the files they touch.
-- **CI has no base-branch filter.** `.github/workflows/ci.yml` triggers on a bare `pull_request:`, so every layer of a stack gets check runs from its own pull request event. The sibling's finding that unregistered upper layers get zero runs is about a workflow filtered on `branches: [main]`. It does not apply here. Register stacks for what they actually buy (section 5), and do not go hunting a missing-checks problem this repository does not have.
+- **CI has no base-branch filter.** `.github/workflows/ci.yml` triggers on a bare `pull_request:`, so every layer of a stack gets check runs from its own pull request event. Register stacks for what they actually buy (section 5), and do not go hunting a missing-checks problem this repository does not have.
 - **The constitution is part of the bar.** `docs/constitution/degrees-of-freedom-constitution.md` is the standard the spec is scored against, and each issue carries conformance criteria drawn from it. A change that passes the tests and violates a criterion is not done.
 
 Everything below this section is the same practice as the sibling, adapted.
@@ -29,6 +29,8 @@ The `state` filter is not a nicety, so pass it explicitly (`state: OPEN`) rather
 This repository does strip the label on close (`.github/workflows/clear-ready-on-close.yml`). Do not rely on it. The practice tracks several repositories and that automation is one repository's, while this filter is every sweep's.
 
 ## 2. Decide what is actually available: artifacts are the state
+
+**Fetch before you look.** Every check below reads the remote. A container may hand you a working tree whose `origin/*` refs are older than the tree itself, and a stale ref answers "no branch matches" for a branch that has been on `origin` for days. Run `git fetch origin` before the first lookup, and again before section 5 resolves a base branch. Read branches through `mcp__github__list_branches` when you want the authority rather than the cache.
 
 The `ready` label alone does not mean an issue is available. Labels go stale, because closing a pull request does not remove them. **The work artifacts are the source of truth, and you check them in this order.**
 
@@ -84,6 +86,8 @@ Layers of the chain may be worked concurrently, but only stacked: each one branc
 
 A layer is **available** when the one below it is in any of three states: already merged; being worked in this same sweep; or carrying an unmerged branch on `origin`, whether or not a pull request on it is still open. The third is the strongest of the three, because the branch is already there when the upper worker starts, so it never waits for one to appear.
 
+Where two or more slices must land before a third, they do not block it. A pull request has one base, so put all of them in one chain in any order where none reads another's code, and stack the third on the topmost. A chain is a linearization of the dependency graph.
+
 Keep the claim check and the dependency check apart. Section 2 asks whether *this* issue is already being worked, and an open pull request there means do not start a second session on it. That says nothing about the issue above it: a layer whose lower neighbour is claimed is released to stack on that neighbour's branch, not blocked by it.
 
 An issue whose lower neighbour is in none of the three states is **not available**. Skip it and record the skip with that reason, naming the issue it waits on; it is not a claim conflict and should not be recorded as one.
@@ -92,7 +96,7 @@ An issue whose lower neighbour is in none of the three states is **not available
 
 There is no fixed budget, and you should not invent one silently. Take what you can carry through section 4's full bar. **Say in your report, and in every skip rationale that leans on it, what budget you chose and why.** A skip reason is only evidence if the constraint behind it is stated.
 
-Depth constrains a chain separately from the count. Where a sweep builds the branches itself, two new layers is what one sweep carries through to a pull request: a third layer waits on a branch two layers down and spends most of its session idle. A layer whose lower neighbour already has a branch on `origin` does not pay that cost, so count it against the budget and not against the depth.
+Depth is not a budget. A layer whose base branch does not exist yet waits for it (section 5), and idle worker time is acceptable. Do not defer a layer to the next sweep to avoid waiting: one sweep that carries a chain to its top moves the specification further than several sweeps that each add one layer.
 
 ## 4. Work the issue
 

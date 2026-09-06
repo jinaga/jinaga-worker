@@ -12,9 +12,6 @@
 # atomic merge. It is NOT what makes CI run. .github/workflows/ci.yml triggers on
 # a bare `pull_request:` with no `branches:` filter, so every layer gets check
 # runs from its own pull request event whether or not the chain is registered.
-# Sibling repositories that do filter on `branches: [main]` behave differently:
-# there the filter matches the PR's base and an unregistered upper layer gets
-# zero check runs. Do not carry that conclusion into this repository.
 #
 # There is no MCP tool for the Stacks API, which is why this script exists: it
 # gives automated sessions one narrow, allowlistable entry point instead of a
