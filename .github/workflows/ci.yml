@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - main
+  # A stacked layer joins its stack after it opens, and joining fires no
+  # workflow trigger, so the run from its own `opened` event is the only one it
+  # is guaranteed. Leave `pull_request` unfiltered by base so that run happens.
   pull_request:
   # The escape hatch for a stacked pull request whose checks never fired.
-  # There is no `branches:` filter above, so every layer gets a run from its
-  # own pull request event and this should stay unused.
   workflow_dispatch:
 
 jobs:
