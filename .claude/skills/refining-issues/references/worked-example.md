@@ -81,7 +81,7 @@ conjunction is the actual invariant. Neither body has to mention the other for
 the coupling to be real, which is why the check reads the criteria rather than
 the file list.
 
-## I2 Dimension — waiting on a decomposition rather than a behaviour
+## I2 Dimension — waiting on a decomposition rather than a behavior
 
 An issue makes `status` report whether the working tree is safe to switch
 branches. Its first draft:
@@ -105,7 +105,7 @@ exactly the ordinary case:
 | true | 0 | true |
 | true | above 0 | unknown |
 
-The third row is the common one. So the dependency is not on another behaviour.
+The third row is the common one. So the dependency is not on another behavior.
 It is on a predicate being split along the axis this issue cares about, and
 that split belongs to whichever issue owns separating the two.
 

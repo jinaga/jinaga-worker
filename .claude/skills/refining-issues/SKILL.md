@@ -83,7 +83,7 @@ requirement it is implementing, and an issue with no conformance criterion can
 be satisfied by a change that passes every test and still offends an article.
 
 Fail R4 when either is missing. The fix is to read the spec and supply them, not
-to invent a requirement: if no section covers the behaviour the issue wants, the
+to invent a requirement: if no section covers the behavior the issue wants, the
 issue is asking for a spec change, which is section 9's territory and a
 maintainer's decision.
 
@@ -106,7 +106,7 @@ invisible to it: two sessions take the coupled pair, both branch from `main`,
 and produce conflicting patches for one design. A declared one becomes a stack.
 
 The reverse costs too. A *Depends on* that no criterion needs makes a free issue
-wait for a blocked one, and the night shift will honour it.
+wait for a blocked one, and the night shift will honor it.
 
 ### I2. Dimension
 
@@ -124,7 +124,7 @@ freedom in the representation, and saying which article it offends is usually
 the clearest statement of the fix.
 
 Fail I2 when the issue must wait for a decomposition rather than for a
-behaviour.
+behavior.
 
 ### I3. Intermediate
 
@@ -172,9 +172,9 @@ waits on a dependency, because bundling makes the free part wait.
 ## Worked example
 
 `references/worked-example.md` runs R1 to R3 and I1 to I3 plus both structural
-moves over one backlog, and closes each with the shape to recognise. The domain
+moves over one backlog, and closes each with the shape to recognize. The domain
 is invented so nothing in it decays as a real backlog is worked. Read it when a
-check's description is not enough to recognise what is in front of you.
+check's description is not enough to recognize what is in front of you.
 
 R4 has no shape section because it is a presence check: the sections are named
 or they are not.
@@ -186,7 +186,7 @@ no bound, so an unresponsive replicator holds a boot path open."
 
 Body leads with what happened or what the mechanism is, cites the code by path
 and line, and closes with acceptance. The sections this backlog uses, in order:
-the mechanism in prose; **Measured** or **Demonstrated**, showing the behaviour
+the mechanism in prose; **Measured** or **Demonstrated**, showing the behavior
 against a real replicator or `JinagaTest`; **Build** or **Proposal**; **Tests**;
 **Conformance**, naming the article each criterion answers to; **Depends on**.
 
