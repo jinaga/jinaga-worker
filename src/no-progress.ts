@@ -3,8 +3,9 @@
  *
  * `kind` and `error` are one axis, not two. A `failed` event always carries the
  * rejection that exhausted the row; a `stalled` event has no error to carry,
- * because the handler resolved every time. Modelled as a union, neither
- * `{ kind: "stalled", error }` nor `{ kind: "failed" }` can be constructed.
+ * because the completion fact was stored every time. Modelled as a union,
+ * neither `{ kind: "stalled", error }` nor `{ kind: "failed" }` can be
+ * constructed.
  */
 export type NoProgressEvent<U = unknown> = FailedEvent<U> | StalledEvent<U>;
 
@@ -28,8 +29,11 @@ interface NoProgress<U> {
 }
 
 /**
- * The handler rejected `maxAttempts` times. Operational, usually transient:
- * quarantine the row and let a restart retry it.
+ * The attempt rejected `maxAttempts` times: the handler rejected, or the
+ * completion fact it returned was refused by the replicator's authorization
+ * rules. Operational, usually transient: quarantine the row and let a restart
+ * retry it. An authorization denial arrives as `error`, because the library
+ * performs that write and sees the rejection.
  */
 export interface FailedEvent<U = unknown> extends NoProgress<U> {
     kind: "failed";
@@ -39,10 +43,11 @@ export interface FailedEvent<U = unknown> extends NoProgress<U> {
 }
 
 /**
- * The handler resolved `maxAttempts` times and a later sweep still returned the
- * row. A programming error that will not resolve on its own: a missing
- * `notExists`, a completion fact of the wrong type, a handler that silently
- * no-ops, or a completion fact the replicator's authorization rules reject.
+ * The completion fact was stored `maxAttempts` times and a later sweep still
+ * returned the row. A programming error that will not resolve on its own: the
+ * specification has no `notExists` on the completion fact, or the fact was
+ * written against a predecessor the specification does not read, so the row
+ * goes on matching its own outstanding set.
  *
  * It is the sweep that decides this, never the absence of a removal
  * notification.

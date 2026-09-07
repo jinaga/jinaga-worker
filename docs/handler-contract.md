@@ -5,26 +5,55 @@ represents. This page states what the library guarantees about how it is
 called, and what it requires of you in return.
 
 ```ts
-handle: (row: SpecificationRow<U>) => Promise<void>
+completes: CompletionConstructor<C>
+handle: (row: SpecificationRow<U>) => Promise<C>
 ```
 
-## The handler writes the completion fact
+## The handler returns the completion fact
 
-The library never writes a fact. A row leaves the outstanding set when your
-application writes a fact that the specification's `notExists` excludes, and
-writing it is part of handling the row:
+A row leaves the outstanding set when a fact the specification's `notExists`
+excludes reaches the store. Your handler builds that fact and returns it; the
+library asserts it.
 
 ```ts
+completes: InvitationMirrored,
 handle: async row => {
     await repo.upsertInvitation(pool, row.result, row.rowHash);
-    await j.fact(new InvitationMirrored(row.result));
+    return new InvitationMirrored(row.result);
 }
 ```
 
-Resolving means the completion fact is written. A handler that resolves without
-writing it leaves the row outstanding, so the next sweep returns it again, and
-after `retry.maxAttempts` such rounds the worker reports the consumer as
-`stalled`.
+`completes` is the constructor of the fact `handle` returns, declared alongside
+it. The library cannot read a closure's return value, and the fact's type is
+erased at runtime, so this is what carries the fact's identity to the
+declaration. The class supplies it in jinaga's own idiom:
+
+```ts
+class InvitationMirrored {
+    static Type = "Blog.Invitation.Mirrored" as const;
+    type = InvitationMirrored.Type;
+    constructor(public invitation: Invitation) {}
+}
+```
+
+The `as const` is what makes `Type` a literal rather than `string`. A class
+without it is refused where you write it, because a widened type carries nothing
+to check.
+
+Two mistakes are compile errors rather than runtime surprises: a handler that
+resolves without producing a fact, and one that returns a fact of a type other
+than the one `completes` names.
+
+## The attempt ends when the fact is stored
+
+The attempt spans your handler and the library's write together, and
+`handlerTimeoutMs` bounds both. The row reaches `completed` when the fact is in
+the store, not when your handler returns.
+
+So a write the replicator refuses — an authorization rule that does not admit
+the worker's principal, say — is a rejection of the attempt. It spends an
+attempt, the row is retried on backoff, and after `maxAttempts` the worker
+reports `failed` carrying the refusal.
 
 ## The handler must be idempotent
 
@@ -47,13 +76,13 @@ admitted. Your handler runs again for a row that is already complete.
 
 So make the handler safe to run twice:
 
-- `j.fact` is already idempotent. Facts are content-addressed, so saving the
-  same completion fact twice saves one fact.
+- The completion fact is already idempotent. Facts are content-addressed, so
+  asserting the same one twice stores one fact.
 - Give every write outside the graph a key. `row.rowHash` identifies the row,
   and an upsert on it turns a second run into a no-op.
 - Do not treat "I already did this" as an error. A second run that finds its
-  work done should resolve, not reject; a rejection here spends an attempt and
-  moves the row toward quarantine.
+  work done should return its completion fact, not reject; a rejection here
+  spends an attempt and moves the row toward quarantine.
 
 ## Rejection
 
@@ -67,9 +96,9 @@ event. See [the quarantine pattern](quarantine-pattern.md).
 
 The handler never runs on the notification turn. The row stream's listener only
 offers the row; the consumer's own turn acquires a slot from the limiter and
-runs the handler. The slot is held for the attempt and released before any
-backoff wait, so a row waiting to retry does not occupy concurrency that another
-row could use.
+runs the handler. The slot is held for the attempt — the handler and the write
+that ends it — and released before any backoff wait, so a row waiting to retry
+does not occupy concurrency that another row could use.
 
 The limiter is what bounds the pressure your handlers put on a connection pool,
 so size it below the pool. A handler that waits on something without a bound

@@ -68,13 +68,43 @@ function controllableStream() {
   return stream;
 }
 
+/**
+ * The completion fact a handler returns, in jinaga's declaration idiom: the
+ * literal on the constructor, and the instance's own `type` read from it.
+ */
+class Mirrored {
+  constructor(rowHash) {
+    this.type = Mirrored.Type;
+    this.rowHash = rowHash;
+  }
+}
+Mirrored.Type = "Test.Item.Mirrored";
+
+/**
+ * The store's half of the seam: what the library asserted, in order. `respond`
+ * is what the store does with each fact before it is recorded, so a test can
+ * hold a write open or refuse it the way an authorization rule does.
+ */
+function factStore(respond = async prototype => prototype) {
+  const store = {
+    asserted: [],
+    fact: async prototype => {
+      const stored = await respond(prototype);
+      store.asserted.push(prototype);
+      return stored;
+    }
+  };
+  return store;
+}
+
 /** The seam the worker reads: one stream per consumer, and an empty sweep. */
-function fakeJinaga(streams) {
+function fakeJinaga(streams, store = factStore()) {
   return {
     hash: fact => `hash-of-${fact.id}`,
     onDistributionDiagnostic: () => {},
     subscribeRows: async specification => streams[specification.name],
-    queryRows: async () => []
+    queryRows: async () => [],
+    fact: prototype => store.fact(prototype)
   };
 }
 
@@ -90,8 +120,11 @@ function deferred() {
  * A handler that records every row it saw and answers each call from `respond`.
  * `reaching` waits for the nth call, so a test waits for the dispatch it is
  * about rather than for a delay.
+ *
+ * A handler returns the completion fact, so `respond` does too, and the default
+ * one returns the fact for the row it was given.
  */
-function recordingHandler(respond = async () => {}) {
+function recordingHandler(respond = async rowValue => new Mirrored(rowValue.rowHash)) {
   const waiters = [];
   const handle = async rowValue => {
     handle.handled.push(rowValue.rowHash);
@@ -145,12 +178,13 @@ function workerOver(t, handlers, options = {}) {
       name,
       specification: { name },
       givens: [tenant(name)],
+      completes: Mirrored,
       handle,
       sweepIntervalMs: 60_000,
       ...(options.consumer?.[name] ?? {})
     });
   });
-  const worker = new WorkerHost(fakeJinaga(streams), {
+  const worker = new WorkerHost(fakeJinaga(streams, options.store), {
     consumers,
     shutdownTimeoutMs: 10,
     logger: silentLogger,
@@ -184,7 +218,7 @@ test("does not dispatch from inside the notification", { timeout: DEADLINE_MS },
   await worker.stop();
 });
 
-test("a handler that writes its completion fact does not re-enter notify", { timeout: DEADLINE_MS }, async t => {
+test("the library asserts the fact the handler returns, and does not re-enter notify", { timeout: DEADLINE_MS }, async t => {
   class Tenant {
     constructor(identifier) {
       this.type = Tenant.Type;
@@ -233,9 +267,15 @@ test("a handler that writes its completion fact does not re-enter notify", { tim
 
   const acme = new Tenant("acme");
   const j = JinagaTest.create({ model, initialState: [acme] });
-  const handle = recordingHandler(rowValue => j.fact(new ItemHandled(rowValue.result)));
+  const handle = recordingHandler(async rowValue => new ItemHandled(rowValue.result));
   const worker = new WorkerHost(j, {
-    consumers: [defineConsumer({ name: "items", specification: outstanding, givens: [acme], handle })],
+    consumers: [defineConsumer({
+      name: "items",
+      specification: outstanding,
+      givens: [acme],
+      completes: ItemHandled,
+      handle
+    })],
     logger: silentLogger
   });
   t.after(() => worker.stop());
@@ -245,11 +285,76 @@ test("a handler that writes its completion fact does not re-enter notify", { tim
   await handle.reaching(1);
   await quiesce();
 
+  // The handler wrote nothing: it returned the fact and the library asserted
+  // it, so the row has left its own outstanding set.
+  assert.deepEqual(
+    await j.queryRows(outstanding, acme),
+    [],
+    "the completion fact the handler returned never reached the store"
+  );
   assert.deepEqual(
     counters.filter(name => name === "observable_notify_reentrant"),
     [],
-    "the handler wrote its completion fact from inside its own notification"
+    "the assertion ran from inside the row's own notification"
   );
+  await worker.stop();
+});
+
+test("a row reaches completed only once the assertion resolves", { timeout: DEADLINE_MS }, async t => {
+  // The write is held open, so the only thing standing between the handler
+  // returning and the row completing is the assertion.
+  const stored = deferred();
+  const store = factStore(async prototype => {
+    await stored.promise;
+    return prototype;
+  });
+  const handle = recordingHandler();
+  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, { store });
+
+  await worker.start();
+  await streams.items.push(added("r1"));
+  await handle.reaching(1);
+  await quiesce();
+
+  assert.equal(
+    phaseOf(rowsOf("items"), "r1"),
+    "dispatching",
+    "the row completed when the handler returned, before its fact was stored"
+  );
+  assert.deepEqual(store.asserted, [], "the write settled while it was still held open");
+
+  stored.resolve();
+  await until(
+    () => phaseOf(rowsOf("items"), "r1") === "completed",
+    "the row never completed once its fact was stored"
+  );
+  assert.deepEqual(store.asserted.map(fact => fact.rowHash), ["r1"]);
+
+  await worker.stop();
+});
+
+test("an assertion the store refuses takes the retry path", { timeout: DEADLINE_MS }, async t => {
+  // The handler resolves every time; only the write fails. The row is
+  // re-attempted and exhausts, so a refused fact is a rejected attempt.
+  const store = factStore(async () => {
+    throw new Error("not authorized");
+  });
+  const handle = recordingHandler();
+  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, {
+    store,
+    consumer: { items: { retry: { maxAttempts: 3, baseMs: 0, capMs: 0 } } }
+  });
+
+  await worker.start();
+  await streams.items.push(added("r1"));
+  await handle.reaching(3);
+  await quiesce();
+
+  assert.deepEqual(handle.handled, ["r1", "r1", "r1"], "the row was re-attempted after the refusal");
+  assert.deepEqual(store.asserted, [], "a refused write was recorded as stored");
+  assert.equal(phaseOf(rowsOf("items"), "r1"), "quarantined");
+  assert.equal(worker.status().consumers[0].completed, 0, "a row completed on a fact the store refused");
+
   await worker.stop();
 });
 
@@ -430,7 +535,8 @@ test("a consumer resolves its retry policy, its handler deadline, and no budget 
     name: "items",
     specification: { name: "items" },
     givens: [tenant("items")],
-    handle: async () => {}
+    completes: Mirrored,
+    handle: async row => new Mirrored(row.rowHash)
   });
 
   assert.deepEqual(consumer.retry, DEFAULT_RETRY_POLICY);

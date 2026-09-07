@@ -12,12 +12,49 @@ import { NoProgressEvent } from "./no-progress";
 import { DEFAULT_RETRY_POLICY, RetryPolicy } from "./retry";
 
 /**
+ * A fact type's literal, or `never` for a class whose `type` widened to
+ * `string`.
+ *
+ * The widened case is the declaration in which nothing could be checked, so it
+ * maps to a type no constructor satisfies and is refused where it is written.
+ */
+export type LiteralType<C extends { type: string }> =
+    string extends C["type"] ? never : C["type"];
+
+/**
+ * The constructor of a fact a consumer's callback returns.
+ *
+ * `Type` is what survives erasure. The fact's own type is erased at runtime and
+ * a closure's return value cannot be read statically, so this literal is the
+ * one value that carries the fact's identity to declaration time.
+ *
+ * The discipline it requires is jinaga's own idiom:
+ *
+ * ```ts
+ * class InvitationMirrored {
+ *     static Type = "Blog.Invitation.Mirrored" as const;
+ *     type = InvitationMirrored.Type;
+ *     constructor(public invitation: Invitation) {}
+ * }
+ * ```
+ */
+export interface CompletionConstructor<C extends { type: string }> {
+    new (...args: never[]): C;
+    Type: LiteralType<C>;
+}
+
+/**
  * What a caller declares about one consumer.
  *
  * Everything here varies per consumer. A setting shared across the whole
  * process is a `WorkerOptions` field instead, and no setting appears in both.
  */
-export interface ConsumerOptions<T extends unknown[], U> {
+export interface ConsumerOptions<
+    T extends unknown[],
+    U,
+    C extends { type: string },
+    Q extends { type: string } = never
+> {
     /** The consumer's name, as it appears in status and diagnostics. */
     name: string;
 
@@ -30,17 +67,34 @@ export interface ConsumerOptions<T extends unknown[], U> {
      */
     givens: T;
 
-    /** What the consumer does with a row. */
-    handle: (row: SpecificationRow<U>) => Promise<void>;
+    /**
+     * The constructor of the fact `handle` returns.
+     *
+     * It is not derivable from `handle` (Art. 2): the type is erased at runtime
+     * and a closure's return cannot be read statically.
+     */
+    completes: CompletionConstructor<C>;
 
     /**
-     * What the application writes about a row that has run out of attempts.
+     * What the consumer does with a row, ending in the completion fact that
+     * takes the row out of the outstanding set. The library asserts it.
+     */
+    handle: (row: SpecificationRow<U>) => Promise<C>;
+
+    /**
+     * What the application records about a row that has run out of attempts.
+     * The factory returns the fact and the library asserts it.
      *
-     * The fact type, the write, and the matching `notExists` in the
-     * specification are the application's: see
+     * The constructor and the factory are one group because a constructor with
+     * no factory, and a factory with no constructor, are states the problem does
+     * not contain (Art. 1, 3). The fact type, its meaning, and the matching
+     * `notExists` in the specification are the application's: see
      * [the quarantine pattern](../docs/quarantine-pattern.md).
      */
-    quarantine?: (row: SpecificationRow<U>, event: NoProgressEvent<U>) => Promise<void>;
+    quarantine?: {
+        produces: CompletionConstructor<Q>;
+        fact: (row: SpecificationRow<U>, event: NoProgressEvent<U>) => Promise<Q>;
+    };
 
     /** A private concurrency budget in place of the worker's shared one. */
     limiter?: Limiter;
@@ -108,15 +162,19 @@ export interface Consumer {
      */
     query(j: Jinaga): Promise<SpecificationRow<unknown>[]>;
 
-    /** Run the handler for one row. */
-    handle(row: SpecificationRow<unknown>): Promise<void>;
+    /**
+     * Run the handler for one row, and return the completion fact it produced.
+     * The runtime asserts it, so the attempt is not done when this resolves.
+     */
+    handle(row: SpecificationRow<unknown>): Promise<Fact>;
 
     /**
-     * Write the application's record of a row that has run out of attempts,
-     * when the consumer declared one. Absent otherwise, and a consumer without
-     * one still caps attempts and still reports.
+     * Build the application's record of a row that has run out of attempts,
+     * when the consumer declared the group. The runtime asserts what it
+     * returns. Absent otherwise, and a consumer without one still caps attempts
+     * and still reports.
      */
-    quarantine?(row: SpecificationRow<unknown>, event: NoProgressEvent): Promise<void>;
+    quarantine?(row: SpecificationRow<unknown>, event: NoProgressEvent): Promise<Fact>;
 }
 
 /**
@@ -124,8 +182,13 @@ export interface Consumer {
  * specification, the givens and the handler are fixed together, and the
  * defaults of section 6 are resolved here, where they have their one home.
  */
-export function defineConsumer<T extends unknown[], U>(
-    options: ConsumerOptions<T, U>
+export function defineConsumer<
+    T extends unknown[],
+    U,
+    C extends { type: string },
+    Q extends { type: string } = never
+>(
+    options: ConsumerOptions<T, U, C, Q>
 ): Consumer {
     const sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
     const capacity = options.capacity ?? DEFAULT_ROW_STREAM_CAPACITY;
@@ -146,10 +209,14 @@ export function defineConsumer<T extends unknown[], U>(
             const rows = await j.queryRows(options.specification, ...options.givens);
             return rows as SpecificationRow<unknown>[];
         },
-        handle: row => options.handle(row as SpecificationRow<U>),
+        handle: async row =>
+            await options.handle(row as SpecificationRow<U>) as unknown as Fact,
         ...(quarantine === undefined ? {} : {
-            quarantine: (row: SpecificationRow<unknown>, event: NoProgressEvent) =>
-                quarantine(row as SpecificationRow<U>, event as NoProgressEvent<U>)
+            quarantine: async (row: SpecificationRow<unknown>, event: NoProgressEvent) =>
+                await quarantine.fact(
+                    row as SpecificationRow<U>,
+                    event as NoProgressEvent<U>
+                ) as unknown as Fact
         })
     };
 }

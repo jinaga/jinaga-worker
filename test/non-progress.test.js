@@ -82,12 +82,49 @@ function controllableQuery(rows = []) {
   return query;
 }
 
-function fakeJinaga(stream, query) {
+/** The completion fact a handler returns, in jinaga's declaration idiom. */
+class Mirrored {
+  constructor(rowHash) {
+    this.type = Mirrored.Type;
+    this.rowHash = rowHash;
+  }
+}
+Mirrored.Type = "Test.Invitation.Mirrored";
+
+/** The fact a quarantine group produces about a row it has given up on. */
+class Quarantined {
+  constructor(rowHash, reason) {
+    this.type = Quarantined.Type;
+    this.rowHash = rowHash;
+    this.reason = reason;
+  }
+}
+Quarantined.Type = "Test.Invitation.Quarantined";
+
+/**
+ * The store's half of the seam: what the library asserted, in order. `respond`
+ * is what the store does with each fact before it is recorded, so a test can
+ * refuse a write the way an authorization rule does.
+ */
+function factStore(respond = async prototype => prototype) {
+  const store = {
+    asserted: [],
+    fact: async prototype => {
+      const stored = await respond(prototype);
+      store.asserted.push(prototype);
+      return stored;
+    }
+  };
+  return store;
+}
+
+function fakeJinaga(stream, query, store = factStore()) {
   return {
     hash: fact => `hash-of-${fact.id}`,
     onDistributionDiagnostic: () => {},
     subscribeRows: async () => stream,
-    queryRows: query.read
+    queryRows: query.read,
+    fact: prototype => store.fact(prototype)
   };
 }
 
@@ -106,7 +143,7 @@ function recordingLogger() {
  * A handler that records every row it saw and answers each call from `respond`,
  * which is given the row and the number of this call.
  */
-function recordingHandler(respond = async () => {}) {
+function recordingHandler(respond = async rowValue => new Mirrored(rowValue.rowHash)) {
   const handle = async rowValue => {
     handle.handled.push(rowValue.rowHash);
     return await respond(rowValue, handle.handled.length);
@@ -164,12 +201,14 @@ function workerOver(t, handle, options = {}) {
   const query = controllableQuery(options.sweepRows ?? []);
   const logger = recordingLogger();
   const events = [];
-  const worker = new WorkerHost(fakeJinaga(stream, query), {
+  const store = options.store ?? factStore();
+  const worker = new WorkerHost(fakeJinaga(stream, query, store), {
     consumers: [
       defineConsumer({
         name: "invitations",
         specification: { name: "invitations" },
         givens: [tenant("invitations")],
+        completes: Mirrored,
         handle,
         retry: FAST_RETRY,
         sweepIntervalMs: options.sweepIntervalMs ?? 60_000,
@@ -186,62 +225,79 @@ function workerOver(t, handle, options = {}) {
   // Unconditional, so an assertion that fails still releases the timers and the
   // run ends in a failure rather than in a hang.
   t.after(() => worker.stop());
-  return { worker, stream, query, logger, events, rows: worker.runtimes[0].rows };
+  return { worker, stream, query, logger, events, store, rows: worker.runtimes[0].rows };
 }
 
 const phaseOf = (rows, rowHash) => rows.get(rowHash)?.phase;
 
-/** A `quarantine` callback that records its calls and answers from `respond`. */
-function recordingQuarantine(respond = async () => {}) {
-  const quarantine = async (rowValue, event) => {
-    quarantine.calls.push({ rowValue, event });
-    return await respond(rowValue, event);
+/**
+ * The quarantine group a consumer declares: the constructor and the factory
+ * that returns the fact. The factory records its calls and answers from
+ * `respond`, and the library asserts what it returns.
+ */
+function recordingQuarantine(
+  respond = async (rowValue, event) => new Quarantined(rowValue.rowHash, event.kind)
+) {
+  const group = {
+    calls: [],
+    produces: Quarantined,
+    fact: async (rowValue, event) => {
+      group.calls.push({ rowValue, event });
+      return await respond(rowValue, event);
+    }
   };
-  quarantine.calls = [];
-  return quarantine;
+  return group;
 }
 
 // ---------------------------------------------------------------------------
 // Exhaustion.
 // ---------------------------------------------------------------------------
 
-test("calls quarantine exactly once when attempts are exhausted", { timeout: DEADLINE_MS }, async t => {
+test("calls the quarantine factory once when attempts are exhausted, and asserts what it returns", { timeout: DEADLINE_MS }, async t => {
   const handle = recordingHandler(async () => {
     throw new Error("nope");
   });
   const quarantine = recordingQuarantine();
-  const { worker, stream, rows, events } = workerOver(t, handle, {
+  const { worker, stream, rows, events, store } = workerOver(t, handle, {
     consumer: { quarantine }
   });
 
   await worker.start();
   await stream.push(added("r1"));
 
-  await until(() => quarantine.calls.length > 0, "quarantine was never called");
+  await until(() => quarantine.calls.length > 0, "the quarantine factory was never called");
   await quiesce();
 
-  assert.equal(quarantine.calls.length, 1, "quarantine was called more than once");
+  assert.equal(quarantine.calls.length, 1, "the quarantine factory was called more than once");
   assert.equal(handle.handled.length, FAST_RETRY.maxAttempts, "the attempt limit was not honoured");
   assert.equal(phaseOf(rows, "r1"), "quarantined");
 
   const [call] = quarantine.calls;
-  assert.deepEqual(call.rowValue, row("r1"), "quarantine saw a different row than the handler");
+  assert.deepEqual(call.rowValue, row("r1"), "the factory saw a different row than the handler");
   assert.equal(call.event.kind, "failed");
   assert.equal(call.event.rowHash, "r1");
   assert.equal(call.event.consumer, "invitations");
   assert.equal(events.length, 1, "onNoProgress fired more than once");
 
+  // The handler rejected every attempt, so the only fact the store holds is the
+  // one the quarantine factory returned, asserted by the library.
+  assert.deepEqual(
+    store.asserted,
+    [new Quarantined("r1", "failed")],
+    "the fact the quarantine factory returned never reached the store"
+  );
+
   await worker.stop();
 });
 
-test("quarantines the row even when the quarantine callback throws", { timeout: DEADLINE_MS }, async t => {
+test("quarantines the row even when the quarantine factory throws", { timeout: DEADLINE_MS }, async t => {
   const handle = recordingHandler(async () => {
     throw new Error("nope");
   });
   const quarantine = recordingQuarantine(async () => {
-    throw new Error("the write was denied");
+    throw new Error("the factory failed");
   });
-  const { worker, stream, rows, events, logger } = workerOver(t, handle, {
+  const { worker, stream, rows, events, logger, store } = workerOver(t, handle, {
     consumer: { quarantine }
   });
 
@@ -251,13 +307,47 @@ test("quarantines the row even when the quarantine callback throws", { timeout: 
   await until(() => events.length > 0, "the row was never reported");
   await quiesce();
 
-  assert.equal(phaseOf(rows, "r1"), "quarantined", "a failed write put the row back in circulation");
+  assert.equal(phaseOf(rows, "r1"), "quarantined", "a failed factory put the row back in circulation");
   assert.equal(quarantine.calls.length, 1);
-  assert.equal(events.length, 1, "the report was withheld because the write failed");
+  assert.deepEqual(store.asserted, [], "a fact was stored though the factory never returned one");
+  assert.equal(events.length, 1, "the report was withheld because the factory failed");
   assert.equal(
-    logger.lines.error.filter(line => line.message.includes("quarantine callback failed")).length,
+    logger.lines.error.filter(line => line.message.includes("quarantine fact failed")).length,
     1,
-    "the failed write was not reported"
+    "the failed factory was not reported"
+  );
+
+  await worker.stop();
+});
+
+test("quarantines the row even when the store refuses the quarantine fact", { timeout: DEADLINE_MS }, async t => {
+  // The factory returns its fact and the write is what fails, which is the
+  // authorization denial of the pattern's own rules.
+  const handle = recordingHandler(async () => {
+    throw new Error("nope");
+  });
+  const quarantine = recordingQuarantine();
+  const { worker, stream, rows, events, logger, store } = workerOver(t, handle, {
+    consumer: { quarantine },
+    store: factStore(async () => {
+      throw new Error("not authorized");
+    })
+  });
+
+  await worker.start();
+  await stream.push(added("r1"));
+
+  await until(() => events.length > 0, "the row was never reported");
+  await quiesce();
+
+  assert.equal(phaseOf(rows, "r1"), "quarantined", "a refused write put the row back in circulation");
+  assert.equal(quarantine.calls.length, 1, "the factory was re-run after the refusal");
+  assert.deepEqual(store.asserted, [], "a refused write was recorded as stored");
+  assert.equal(events.length, 1, "the report was withheld because the write was refused");
+  assert.equal(
+    logger.lines.error.filter(line => line.message.includes("quarantine fact failed")).length,
+    1,
+    "the refused write was not reported"
   );
 
   await worker.stop();
@@ -355,6 +445,38 @@ test("reports failed, with the last rejection, when the handler throws to exhaus
 // The callbacks are the application's, and bounded.
 // ---------------------------------------------------------------------------
 
+test("reports failed, carrying the refusal, when the store refuses the completion fact", { timeout: DEADLINE_MS }, async t => {
+  // The handler resolves every time. Only the write fails, and the library is
+  // the party that performs it, so the refusal is the attempt's own error
+  // rather than a diagnosis the loop has to guess at.
+  const handle = recordingHandler();
+  const { worker, stream, rows, events, store } = workerOver(t, handle, {
+    store: factStore(async () => {
+      throw new Error("not authorized");
+    }),
+    // The sweep keeps returning the row, which is the reading under which a
+    // resolved handler would have been called stalled.
+    sweepIntervalMs: 1,
+    sweepRows: [row("r1")]
+  });
+
+  await worker.start();
+  await stream.push(added("r1"));
+
+  await until(() => events.length > 0, "the row was never reported");
+  await quiesce();
+
+  const [event] = events;
+  assert.equal(event.kind, "failed", "a refused completion fact was reported as stalled");
+  assert.match(event.error.message, /not authorized/, "the event did not carry the refusal");
+  assert.equal(event.attempts, FAST_RETRY.maxAttempts);
+  assert.deepEqual(store.asserted, [], "a refused write was recorded as stored");
+  assert.equal(handle.handled.length, FAST_RETRY.maxAttempts, "the attempt limit was not honoured");
+  assert.equal(phaseOf(rows, "r1"), "quarantined");
+
+  await worker.stop();
+});
+
 test("an onNoProgress callback that never settles does not wedge the loop", { timeout: DEADLINE_MS }, async t => {
   const handle = recordingHandler(async rowValue => {
     if (rowValue.rowHash === "r1") {
@@ -383,11 +505,11 @@ test("an onNoProgress callback that never settles does not wedge the loop", { ti
   await worker.stop();
 });
 
-test("a consumer with no quarantine callback still caps attempts and still emits the event", { timeout: DEADLINE_MS }, async t => {
+test("a consumer with no quarantine group still reports failed, and writes nothing", { timeout: DEADLINE_MS }, async t => {
   const handle = recordingHandler(async () => {
     throw new Error("nope");
   });
-  const { worker, stream, rows, events } = workerOver(t, handle);
+  const { worker, stream, rows, events, store } = workerOver(t, handle);
 
   await worker.start();
   await stream.push(added("r1"));
@@ -399,6 +521,34 @@ test("a consumer with no quarantine callback still caps attempts and still emits
   assert.equal(phaseOf(rows, "r1"), "quarantined");
   assert.equal(events[0].kind, "failed");
   assert.equal(events.length, 1);
+  assert.deepEqual(store.asserted, [], "a consumer that declared no group still wrote something");
+
+  await worker.stop();
+});
+
+test("a consumer with no quarantine group still reports stalled, and writes only its completions", { timeout: DEADLINE_MS }, async t => {
+  // The handler resolves and its fact is stored every time, and the sweep goes
+  // on returning the row: the fact excludes nothing the specification reads.
+  const handle = recordingHandler();
+  const { worker, rows, events, store } = workerOver(t, handle, {
+    sweepIntervalMs: 1,
+    sweepRows: [row("r1")]
+  });
+
+  await worker.start();
+
+  await until(() => events.length > 0, "the row was never reported");
+  await quiesce();
+
+  assert.equal(handle.handled.length, FAST_RETRY.maxAttempts, "the attempt limit was not honoured");
+  assert.equal(phaseOf(rows, "r1"), "quarantined");
+  assert.equal(events[0].kind, "stalled");
+  assert.equal(events.length, 1);
+  assert.deepEqual(
+    store.asserted,
+    Array.from({ length: FAST_RETRY.maxAttempts }, () => new Mirrored("r1")),
+    "the store holds something other than one completion fact per attempt"
+  );
 
   await worker.stop();
 });
@@ -502,14 +652,16 @@ test("the diagnostics channel is registered before the first subscribe", { timeo
       order.push("subscribed");
       return stream;
     },
-    queryRows: async () => []
+    queryRows: async () => [],
+    fact: async prototype => prototype
   }, {
     consumers: [
       defineConsumer({
         name: "invitations",
         specification: { name: "invitations" },
         givens: [tenant("invitations")],
-        handle: async () => {}
+        completes: Mirrored,
+        handle: async row => new Mirrored(row.rowHash)
       })
     ],
     shutdownTimeoutMs: 10,

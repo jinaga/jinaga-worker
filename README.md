@@ -23,6 +23,6 @@ This repository is scaffolded for RFC #251 in `jinaga/jinaga.js`:
 - [The handler contract](docs/handler-contract.md): what `handle` is promised,
   and why it has to be idempotent
 - [The quarantine pattern](docs/quarantine-pattern.md): the fact type, the
-  condition, the callback, and what declining the pattern costs
+  condition, the group, and what declining the pattern costs
 - [Constraints inherited from jinaga](docs/inherited-constraints.md): platform
   properties that are silent when violated

@@ -3,8 +3,9 @@ import { SpecificationRow } from "jinaga";
 /**
  * What a consumer knows about one outstanding row.
  *
- * Four phases for the four situations a row can be in. `attempts` and
- * `firstAttemptAt` appear on the phases where they govern something: the
+ * Four phases for the four situations a row can be in. `completed` means the
+ * completion fact is in the store, which is where an attempt ends. `attempts`
+ * and `firstAttemptAt` appear on the phases where they govern something: the
  * attempt limit, and the elapsed time a non-progress report carries. A row
  * reaches exhaustion from `dispatching` and from `completed` alike, so both
  * carry them. A quarantined row is never attempted again and never reported
@@ -33,10 +34,13 @@ export type RowStateMap<U> = Map<string, RowState<U>>;
  * `removed` covers both ways a row leaves the outstanding set: a `removed`
  * change from the stream, and a sweep that omits the row.
  *
- * `rejected` covers both ways an attempt fails: a handler that rejects, and one
- * that exceeds its timeout. `retryAt` is when the next attempt is due, computed
- * from the consumer's retry policy by the caller, and `maxAttempts` is that
- * policy's limit.
+ * `resolved` is the completion fact reaching the store, not the handler
+ * returning it: the attempt spans both.
+ *
+ * `rejected` covers every way an attempt fails: a handler that rejects, a
+ * completion fact the store refuses, and an attempt that exceeds its timeout.
+ * `retryAt` is when the next attempt is due, computed from the consumer's retry
+ * policy by the caller, and `maxAttempts` is that policy's limit.
  */
 export type RowEvent<U> =
     | { kind: "added"; row: SpecificationRow<U>; at: number }

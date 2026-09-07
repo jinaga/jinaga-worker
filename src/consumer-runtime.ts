@@ -226,8 +226,9 @@ export class ConsumerRuntime {
      * Admit a row and dispatch it, holding the attempt while it runs so
      * `stop()` awaits exactly the rows the map reports as `dispatching`.
      *
-     * The row moves to `completed` when the handler resolves, and to `waiting`
-     * or `quarantined` when it rejects, on the terms its retry policy sets.
+     * The row moves to `completed` once the completion fact is stored, and to
+     * `waiting` or `quarantined` when the attempt rejects, on the terms its
+     * retry policy sets.
      *
      * An offer the map already holds an entry for is suppressed, and there is
      * no attempt to return.
@@ -241,8 +242,14 @@ export class ConsumerRuntime {
      *
      * The first `await` is what keeps the handler off the notification turn:
      * whichever discovery path offered the row has returned before the handler
-     * is called. A slot is held for the handler alone and released when it
-     * settles, so the backoff wait that may follow holds nothing.
+     * is called. A slot is held for the handler and the assertion of the fact it
+     * returns, and released when they settle, so the backoff wait that may
+     * follow holds nothing.
+     *
+     * The attempt is not done until the completion fact is stored, so the
+     * deadline bounds the handler and that write together and a rejection from
+     * either is a rejection of the attempt. An authorization rule that refuses
+     * the fact therefore reaches the map as this attempt's error.
      *
      * A handler that throws where it could have rejected is the same failure
      * and reaches the map by the same path, because it throws inside this
@@ -280,7 +287,7 @@ export class ConsumerRuntime {
         await nextTurn();
         try {
             await this.limiter.run(() => withTimeout(
-                this.consumer.handle(row),
+                this.consumer.handle(row).then(fact => this.j.fact(fact)),
                 this.consumer.handlerTimeoutMs
             ));
         }
@@ -373,11 +380,13 @@ export class ConsumerRuntime {
     /**
      * Write the application's quarantine record, then emit the event once.
      *
-     * Both callbacks are the application's, and both are bounded by
-     * `handlerTimeoutMs`, so neither can wedge the loop it is reporting on. A
-     * callback that fails is logged; the row stays quarantined and the report
-     * still goes out, because the failure of a write is not evidence that the
-     * row can make progress.
+     * The factory builds the fact and this asserts it, as dispatch does for the
+     * completion fact. Both callbacks are the application's, and both are
+     * bounded by `handlerTimeoutMs` — the factory and its write together — so
+     * neither can wedge the loop it is reporting on. A factory that throws, and
+     * a write the store refuses, are logged alike; the row stays quarantined
+     * and the report still goes out, because the failure of a write is not
+     * evidence that the row can make progress.
      *
      * The library's own line goes out first, so a slow callback does not delay
      * the diagnostic. It names the consumer, which is what an operator follows
@@ -394,13 +403,13 @@ export class ConsumerRuntime {
         if (this.consumer.quarantine !== undefined) {
             try {
                 await withTimeout(
-                    this.consumer.quarantine(row, event),
+                    this.consumer.quarantine(row, event).then(fact => this.j.fact(fact)),
                     this.consumer.handlerTimeoutMs
                 );
             }
             catch (error) {
                 this.logger.error(
-                    `${this.consumer.name}: quarantine callback failed for ${event.rowHash}`,
+                    `${this.consumer.name}: quarantine fact failed for ${event.rowHash}`,
                     { consumer: this.consumer.name, rowHash: event.rowHash, error }
                 );
             }
