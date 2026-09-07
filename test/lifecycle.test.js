@@ -7,6 +7,22 @@ const { WorkerHost } = require("../dist/worker.js");
 // A given is a fact, and the only thing the lifecycle asks of one is its hash.
 const tenant = id => ({ type: "Test.Tenant", id });
 
+/** The completion fact a handler returns, in jinaga's declaration idiom. */
+class Mirrored {
+  constructor(rowHash) {
+    this.type = Mirrored.Type;
+    this.rowHash = rowHash;
+  }
+}
+Mirrored.Type = "Test.Item.Mirrored";
+
+/**
+ * A handler that completes its row. Most of these tests are about the
+ * lifecycle and never dispatch one, so this is what a consumer declares when
+ * the handler itself is not what the test is about.
+ */
+const completing = async row => new Mirrored(row.rowHash);
+
 // The seam the worker uses: a hash per given, and a row stream per consumer.
 function fakeJinaga(streams = {}) {
   return {
@@ -18,7 +34,8 @@ function fakeJinaga(streams = {}) {
         return openStream();
       }
       return open();
-    }
+    },
+    fact: async prototype => prototype
   };
 }
 
@@ -55,6 +72,7 @@ const consumerOf = (name, handle, options = {}) => defineConsumer({
   name,
   specification: { name },
   givens: [tenant(name)],
+  completes: Mirrored,
   handle,
   ...options
 });
@@ -70,7 +88,7 @@ const timerCount = () =>
 
 test("stop() before start() resolves cleanly and reports zeros", async () => {
   const worker = createWorker(fakeJinaga(), {
-    consumers: [consumerOf("invitations", async () => {})],
+    consumers: [consumerOf("invitations", completing)],
     logger: recordingLogger()
   });
 
@@ -89,7 +107,7 @@ test("stop() drains a settled handler and counts it in drained", async () => {
   assert.equal(worker.status().consumers[0].dispatching, 1);
 
   const stopping = worker.stop();
-  handler.resolve();
+  handler.resolve(new Mirrored("row-1"));
   await running;
 
   assert.deepEqual(await stopping, { drained: 1, abandoned: 0 });
@@ -146,7 +164,7 @@ test("an attempt is suppressed while the map holds an entry for the row", async 
 
 test("stop() drops waiting rows rather than draining them", async () => {
   const worker = new WorkerHost(fakeJinaga(), {
-    consumers: [consumerOf("invitations", async () => {})],
+    consumers: [consumerOf("invitations", completing)],
     logger: recordingLogger()
   });
   const rows = worker.runtimes[0].rows;
@@ -177,8 +195,8 @@ test("start() rejects when subscribeRows rejects, and leaves no timers behind", 
   });
   const worker = createWorker(j, {
     consumers: [
-      consumerOf("invitations", async () => {}),
-      consumerOf("attendees", async () => {})
+      consumerOf("invitations", completing),
+      consumerOf("attendees", completing)
     ],
     logger: recordingLogger()
   });
@@ -194,8 +212,8 @@ test("a started worker holds a sweep timer per consumer until stop()", async () 
   const before = timerCount();
   const worker = createWorker(fakeJinaga(), {
     consumers: [
-      consumerOf("invitations", async () => {}),
-      consumerOf("attendees", async () => {})
+      consumerOf("invitations", completing),
+      consumerOf("attendees", completing)
     ],
     logger: recordingLogger()
   });
@@ -211,8 +229,8 @@ test("the given hash is logged once per consumer at startup", async () => {
   const logger = recordingLogger();
   const worker = createWorker(fakeJinaga(), {
     consumers: [
-      consumerOf("invitations", async () => {}),
-      consumerOf("attendees", async () => {})
+      consumerOf("invitations", completing),
+      consumerOf("attendees", completing)
     ],
     logger
   });
@@ -237,8 +255,8 @@ test("the given hash is logged once per consumer at startup", async () => {
 test("status() reports each consumer's given hash and its counts, derived", async () => {
   const worker = createWorker(fakeJinaga(), {
     consumers: [
-      consumerOf("invitations", async () => {}),
-      consumerOf("attendees", async () => {})
+      consumerOf("invitations", completing),
+      consumerOf("attendees", completing)
     ],
     logger: recordingLogger()
   });
@@ -270,9 +288,9 @@ test("status() reports each consumer's given hash and its counts, derived", asyn
 });
 
 test("a consumer resolves the sweep interval and the stream capacity", async () => {
-  assert.equal(consumerOf("invitations", async () => {}).sweepIntervalMs, 60_000);
+  assert.equal(consumerOf("invitations", completing).sweepIntervalMs, 60_000);
   assert.equal(
-    consumerOf("invitations", async () => {}, { sweepIntervalMs: 5 }).sweepIntervalMs,
+    consumerOf("invitations", completing, { sweepIntervalMs: 5 }).sweepIntervalMs,
     5
   );
 
@@ -287,8 +305,8 @@ test("a consumer resolves the sweep interval and the stream capacity", async () 
   };
   const worker = createWorker(j, {
     consumers: [
-      consumerOf("invitations", async () => {}),
-      consumerOf("attendees", async () => {}, { capacity: 4 })
+      consumerOf("invitations", completing),
+      consumerOf("attendees", completing, { capacity: 4 })
     ],
     logger: recordingLogger()
   });

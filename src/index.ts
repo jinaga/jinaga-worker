@@ -12,11 +12,13 @@ export {
 export { Logger } from "./logger";
 
 export {
+  CompletionConstructor,
   Consumer,
   ConsumerOptions,
   DEFAULT_HANDLER_TIMEOUT_MS,
   DEFAULT_SWEEP_INTERVAL_MS,
-  defineConsumer
+  defineConsumer,
+  LiteralType
 } from "./consumer";
 
 export { Limiter } from "./limiter";

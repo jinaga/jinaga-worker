@@ -76,12 +76,26 @@ function controllableQuery(rows = []) {
   return query;
 }
 
+/**
+ * The completion fact a handler returns, in jinaga's declaration idiom. The
+ * tests that drive the seam directly never read it back; the store below
+ * accepts it and the row completes.
+ */
+class Mirrored {
+  constructor(rowHash) {
+    this.type = Mirrored.Type;
+    this.rowHash = rowHash;
+  }
+}
+Mirrored.Type = "Test.Item.Mirrored";
+
 function fakeJinaga(stream, query) {
   return {
     hash: fact => `hash-of-${fact.id}`,
     onDistributionDiagnostic: () => {},
     subscribeRows: async () => stream,
-    queryRows: query.read
+    queryRows: query.read,
+    fact: async prototype => prototype
   };
 }
 
@@ -93,8 +107,11 @@ function deferred() {
   return { promise, ...settle };
 }
 
-/** A handler that records the rows it saw, and lets a test await the nth call. */
-function recordingHandler(respond = async () => {}) {
+/**
+ * A handler that records the rows it saw, and lets a test await the nth call.
+ * A handler returns the completion fact, so `respond` does too.
+ */
+function recordingHandler(respond = async rowValue => new Mirrored(rowValue.rowHash)) {
   const handled = [];
   const waiters = [];
   const handle = async rowValue => {
@@ -102,7 +119,7 @@ function recordingHandler(respond = async () => {}) {
     for (const waiter of waiters.splice(0)) {
       waiter();
     }
-    await respond(rowValue);
+    return await respond(rowValue);
   };
   handle.handled = handled;
   handle.reaching = count => new Promise(resolve => {
@@ -153,7 +170,7 @@ async function quiesce() {
 /** Wait for a state the consumer reaches on its own turns. */
 async function until(condition, what) {
   for (let turn = 0; turn < 10_000; turn += 1) {
-    if (condition()) {
+    if (await condition()) {
       return;
     }
     await new Promise(resolve => setImmediate(resolve));
@@ -168,6 +185,7 @@ function workerOver(t, stream, query, handle, options = {}) {
         name: "invitations",
         specification: { name: "invitations" },
         givens: [tenant("invitations")],
+        completes: Mirrored,
         handle,
         sweepIntervalMs: 1,
         ...options
@@ -230,15 +248,16 @@ test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE
   const j = JinagaTest.create({ model, initialState: [acme] });
   const backlog = await j.fact(new Item(acme, "backlog"));
 
-  // A consumer's handler writes the completion fact, which is what takes the
-  // row out of the outstanding set.
-  const handle = recordingHandler(rowValue => j.fact(new ItemHandled(rowValue.result)));
+  // A consumer's handler returns the completion fact and the library asserts
+  // it, which is what takes the row out of the outstanding set.
+  const handle = recordingHandler(async rowValue => new ItemHandled(rowValue.result));
   const worker = createWorker(j, {
     consumers: [
       defineConsumer({
         name: "items",
         specification: outstanding,
         givens: [acme],
+        completes: ItemHandled,
         handle
       })
     ],
@@ -251,6 +270,12 @@ test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE
 
   const later = await j.fact(new Item(acme, "later"));
   await handle.reaching(2);
+  // The handler returning its fact is not the end of the attempt: the library
+  // asserts it, and the row leaves the outstanding set when that write lands.
+  await until(
+    async () => (await j.queryRows(outstanding, acme)).length === 0,
+    "the completion facts the handler returned never reached the store"
+  );
   await quiesce();
 
   assert.deepEqual(handle.handled.map(r => r.result.key), ["backlog", "later"]);
@@ -261,7 +286,8 @@ test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE
   );
   assert.deepEqual(await j.queryRows(outstanding, acme), []);
 
-  // Both facts are the application's; the library wrote neither.
+  // Both fact types are the application's; the library asserted what the
+  // handler returned for each row.
   const completions = model.given(Tenant).match((owner, facts) =>
     facts.ofType(ItemHandled).join(handled => handled.item.tenant, owner));
   assert.equal((await j.query(completions, acme)).length, 2);
@@ -276,15 +302,17 @@ test("the backstop sweep reads the outstanding set through queryRows", { timeout
   const j = JinagaTest.create({ model, initialState: [acme] });
   await j.fact(new Item(acme, "outstanding"));
 
-  // This handler writes no completion fact, so the row stays outstanding and
-  // every sweep still returns it.
-  const handle = recordingHandler();
+  // This handler has not returned its completion fact yet, so nothing has been
+  // asserted, the row stays outstanding, and every sweep still returns it.
+  const handler = deferred();
+  const handle = recordingHandler(() => handler.promise);
   const worker = new WorkerHost(j, {
     consumers: [
       defineConsumer({
         name: "items",
         specification: outstanding,
         givens: [acme],
+        completes: ItemHandled,
         handle,
         sweepIntervalMs: 1
       })
