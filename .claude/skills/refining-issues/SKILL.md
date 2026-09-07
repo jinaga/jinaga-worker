@@ -63,7 +63,7 @@ to the wrong question, and every direction under it reads as reasonable. The
 cost is a large fix where a small one was needed.
 
 **Two premises are settled here and are not gaps.** Section 9 of
-`docs/durable-consumer-spec.md` records the decisions taken after the RFC, and
+`design/durable-consumer-spec.md` records the decisions taken after the RFC, and
 section 10.2 records three tensions accepted as compromises. An issue whose
 premise is "the library should not have decided X" or "T2 leaves the language
 open" is arguing with an accepted specification. That is a maintainer's
@@ -76,8 +76,8 @@ Does the issue name the spec sections it answers to, and carry conformance
 criteria that cite the constitution?
 
 The night shift treats the issue body as an index into
-`docs/durable-consumer-spec.md` and
-`docs/constitution/degrees-of-freedom-constitution.md`, not as a substitute for
+`design/durable-consumer-spec.md` and
+`design/constitution/degrees-of-freedom-constitution.md`, not as a substitute for
 them. An issue that names no section leaves the agent to guess which
 requirement it is implementing, and an issue with no conformance criterion can
 be satisfied by a change that passes every test and still offends an article.

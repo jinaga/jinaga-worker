@@ -7,7 +7,7 @@ description: Work the queue of GitHub issues labelled `ready` in jinaga/jinaga-w
 
 This is the protocol for automated work on `jinaga/jinaga-worker`. It exists so a scheduled agent can pick up work at night without a person watching, and so two agents never work the same issue twice.
 
-Read `CLAUDE.md` first. Read `docs/durable-consumer-spec.md` before touching any issue: this repository implements one accepted specification, and every issue names the sections it answers to.
+Read `CLAUDE.md` first. Read `design/durable-consumer-spec.md` before touching any issue: this repository implements one accepted specification, and every issue names the sections it answers to.
 
 ## 0. What is different about this repository
 
@@ -16,7 +16,7 @@ The sibling protocol in `jinaga/jinaga.js` was written for a maintained library 
 - **There is nothing to reproduce.** An issue here does not describe a defect. Section 4 replaces "reproduce first" with the spec section and the issue's own conformance criteria.
 - **Almost everything stacks.** The issues form one dependency chain — #3 → #4 → #5 → #6 → #7 → #8 — declared in each issue's *Depends on*. Sequencing is read off the issues, not inferred from the files they touch.
 - **CI has no base-branch filter.** `.github/workflows/ci.yml` triggers on a bare `pull_request:`, so every layer of a stack gets check runs from its own pull request event. Register stacks for what they actually buy (section 5), and do not go hunting a missing-checks problem this repository does not have.
-- **The constitution is part of the bar.** `docs/constitution/degrees-of-freedom-constitution.md` is the standard the spec is scored against, and each issue carries conformance criteria drawn from it. A change that passes the tests and violates a criterion is not done.
+- **The constitution is part of the bar.** `design/constitution/degrees-of-freedom-constitution.md` is the standard the spec is scored against, and each issue carries conformance criteria drawn from it. A change that passes the tests and violates a criterion is not done.
 
 Everything below this section is the same practice as the sibling, adapted.
 
@@ -212,7 +212,7 @@ If the Factual server is unreachable, do the GitHub work anyway and say in your 
 - Never close an issue, and never remove `ready` except as part of the question swap.
 - Never skip, disable, or quarantine a test to get a green build.
 - Never push an empty commit to re-trigger CI.
-- Never edit `docs/durable-consumer-spec.md` or the constitution to make an implementation conform. The spec is the requirement; a change to it is a maintainer's decision and a question under section 6.
+- Never edit `design/durable-consumer-spec.md` or the constitution to make an implementation conform. The spec is the requirement; a change to it is a maintainer's decision and a question under section 6.
 - Never put a mutating call in a retry or fallback position. A shell `cmd-a || cmd-b` runs `cmd-b` when `cmd-a` merely prints something unexpected, and a "test" invocation of a create endpoint is a real write.
 - End every GitHub comment with the Claude Code attribution footer.
 - Do not put model identifiers in commit messages, pull request text, or code comments.
