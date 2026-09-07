@@ -44,7 +44,7 @@ a restart has to recover.
 | Asserting the completion and quarantine facts the callbacks return | The quarantine fact type and its meaning |
 | Retry pacing and attempt accounting | Deciding what non-progress means operationally |
 | Diagnosing non-progress and reporting it | Process supervision |
-| Draining on shutdown | |
+| Draining on shutdown | — |
 
 The library composes no fact of its own. It asserts exactly what a callback
 returns, through the application's model and under the worker principal's
@@ -460,11 +460,11 @@ past the deadline.
 ## 4. The quarantine pattern
 
 **Read this before deploying a worker.** The library calls back when a row has
-exhausted its attempts, and asserts the fact the callback returns. The fact
-type and the specification condition are the application's, and a consumer that
-declares neither gets no callback: a poison row is then suppressed in memory for
-the life of one process and re-attempted by the next one, forever. That is the
-documented consequence of declining the pattern, not a defect.
+exhausted its attempts, and asserts the fact the callback returns. The fact type
+and the specification condition are the application's. A consumer that declares
+no `quarantine` group gets no callback, and its poison rows are suppressed in
+memory for the life of one process and re-attempted by the next one, forever.
+That is the documented consequence of declining the pattern, not a defect.
 
 ### 4.1 Define the fact
 
