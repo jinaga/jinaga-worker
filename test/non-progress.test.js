@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { defineConsumer } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
 const { distributionDiagnostics } = require("../dist/diagnostics.js");
+const { retiringOn } = require("./outstanding-specification.js");
 
 // A given is a fact, and non-progress asks nothing of one but its hash.
 const tenant = id => ({ type: "Test.Tenant", id });
@@ -206,7 +207,7 @@ function workerOver(t, handle, options = {}) {
     consumers: [
       defineConsumer({
         name: "invitations",
-        specification: { name: "invitations" },
+        specification: retiringOn(Mirrored.Type, Quarantined.Type),
         givens: [tenant("invitations")],
         completes: Mirrored,
         handle,
@@ -658,7 +659,7 @@ test("the diagnostics channel is registered before the first subscribe", { timeo
     consumers: [
       defineConsumer({
         name: "invitations",
-        specification: { name: "invitations" },
+        specification: retiringOn(Mirrored.Type, Quarantined.Type),
         givens: [tenant("invitations")],
         completes: Mirrored,
         handle: async row => new Mirrored(row.rowHash)

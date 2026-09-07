@@ -10,6 +10,7 @@ const {
 } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
 const { backoffMs } = require("../dist/retry.js");
+const { retiringOn } = require("./outstanding-specification.js");
 
 // A given is a fact, and dispatch asks nothing of one but its hash.
 const tenant = id => ({ type: "Test.Tenant", id });
@@ -102,7 +103,7 @@ function fakeJinaga(streams, store = factStore()) {
   return {
     hash: fact => `hash-of-${fact.id}`,
     onDistributionDiagnostic: () => {},
-    subscribeRows: async specification => streams[specification.name],
+    subscribeRows: async (specification, given) => streams[given.id],
     queryRows: async () => [],
     fact: prototype => store.fact(prototype)
   };
@@ -176,7 +177,7 @@ function workerOver(t, handlers, options = {}) {
     streams[name] = controllableStream();
     return defineConsumer({
       name,
-      specification: { name },
+      specification: retiringOn(Mirrored.Type),
       givens: [tenant(name)],
       completes: Mirrored,
       handle,
@@ -533,7 +534,7 @@ test("a consumer with its own limiter is bounded by that one instead", { timeout
 test("a consumer resolves its retry policy, its handler deadline, and no budget of its own", () => {
   const consumer = defineConsumer({
     name: "items",
-    specification: { name: "items" },
+    specification: retiringOn(Mirrored.Type),
     givens: [tenant("items")],
     completes: Mirrored,
     handle: async row => new Mirrored(row.rowHash)

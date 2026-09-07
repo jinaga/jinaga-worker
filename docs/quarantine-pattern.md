@@ -30,8 +30,9 @@ nothing to check.
 
 ## 2. Exclude it in the specification
 
-The outstanding set must exclude a quarantined row, or the row never leaves and
-the consumer reports `stalled` about its own quarantine:
+The outstanding set must exclude a quarantined row. `defineConsumer` compares
+the group's `produces` against this condition and refuses a consumer whose
+quarantine fact the specification does not exclude:
 
 ```ts
 const outstandingInvitations = model.given(Tenant).match((tenant, facts) =>
@@ -92,13 +93,14 @@ the pattern.
 ## The group and the condition move together
 
 The `quarantine` group of step 3 and the `notExists` of step 2 are one decision
-written at two sites, and nothing checks that they agree. The library cannot
-compose a condition onto a specification it did not build, so this page is where
-the coupling is stated, and `stalled` is how a violation is detected:
+written at two sites. The library cannot compose a condition onto a
+specification it did not build, so this page is where the coupling is stated.
+`produces` carries the fact's type to declaration time, which bounds one half of
+it:
 
-- **A group and no condition.** The quarantine fact is stored, the row stays in
-  the outstanding set, every sweep returns it, and the consumer reports
-  `stalled` about a row it has already given up on.
+- **A group and no condition.** `defineConsumer` throws, naming the declared
+  type and the types the specification does retire on. The consumer never
+  reaches a worker.
 - **A condition and no group.** Nothing ever produces the fact, so the condition
   never excludes anything. The row is suppressed in memory for the life of this
   process and re-attempted by the next one.

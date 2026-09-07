@@ -44,6 +44,17 @@ Two mistakes are compile errors rather than runtime surprises: a handler that
 resolves without producing a fact, and one that returns a fact of a type other
 than the one `completes` names.
 
+A third is caught when you declare the consumer. `defineConsumer` inverts your
+specification to find the fact types that take a row out of it, and throws when
+`completes` names none of them — a specification carrying no `notExists` at all,
+or one whose condition names a different fact. The message names the type you
+declared and the types the specification does retire on.
+
+What that leaves is a fact of the declared type written against the wrong
+predecessor. It is type-correct, it retires some other row, and the library
+cannot see it: the library does not know which member of your projection should
+hold the row. That one reaches `maxAttempts` and reports as `stalled`.
+
 ## The attempt ends when the fact is stored
 
 The attempt spans your handler and the library's write together, and
