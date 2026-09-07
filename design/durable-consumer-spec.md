@@ -30,23 +30,26 @@ invitations where not exists InvitationMirrored
               and not exists InvitationQuarantined
 ```
 
-Progress lives in the fact graph. A row leaves the outstanding set when the
-application writes a fact about it — a completion on the happy path, a
-quarantine on the failure path. There is no cursor, no offset, and no state
-outside the graph that a restart has to recover.
+Progress lives in the fact graph. A row leaves the outstanding set when a fact
+is written about it — a completion on the happy path, a quarantine on the
+failure path. There is no cursor, no offset, and no state outside the graph that
+a restart has to recover.
 
 ### Division of responsibility
 
 | The library owns | The application owns |
 | --- | --- |
 | Discovery: the stream and the backstop sweep, deduplicated on `rowHash` | The specification, including both `notExists` conditions |
-| Dispatch: off the notification turn, under a concurrency limit and a timeout | The handler, and the completion fact it writes |
-| Retry pacing and attempt accounting | The quarantine fact type, and writing it |
-| Diagnosing non-progress and reporting it | Deciding what non-progress means operationally |
-| Draining on shutdown | Process supervision |
+| Dispatch: off the notification turn, under a concurrency limit and a timeout | The handler, and the type of the completion fact it returns |
+| Asserting the completion and quarantine facts the callbacks return | The quarantine fact type and its meaning |
+| Retry pacing and attempt accounting | Deciding what non-progress means operationally |
+| Diagnosing non-progress and reporting it | Process supervision |
+| Draining on shutdown | — |
 
-The library never writes a fact. Every write is the application's, through its
-own model, under its own authorization rules.
+The library composes no fact of its own. It asserts exactly what a callback
+returns, through the application's model and under the worker principal's
+authorization rules. Holding the write is what lets the declared fact type be
+checked against the specification before a row is dispatched (§2.2).
 
 ### Non-goals
 
@@ -73,9 +76,11 @@ Two rules shape this surface, both from the constitution:
 ```ts
 import { Jinaga, SpecificationOf, SpecificationRow } from "jinaga";
 
-export function defineConsumer<T extends unknown[], U>(
-    options: ConsumerOptions<T, U>
-): Consumer;
+export function defineConsumer<
+    T extends unknown[], U,
+    C extends { type: string },
+    Q extends { type: string } = never
+>(options: ConsumerOptions<T, U, C, Q>): Consumer;
 
 export function createWorker(j: Jinaga, options: WorkerOptions): Worker;
 
@@ -108,12 +113,28 @@ the event names the consumer it came from, so a per-consumer reaction is a
 ### 2.2 Consumer options — what genuinely varies per consumer
 
 ```ts
-export interface ConsumerOptions<T extends unknown[], U> {
+type LiteralType<C extends { type: string }> =
+    string extends C["type"] ? never : C["type"];
+
+export interface CompletionConstructor<C extends { type: string }> {
+    new (...args: never[]): C;
+    Type: LiteralType<C>;
+}
+
+export interface ConsumerOptions<
+    T extends unknown[], U,
+    C extends { type: string },
+    Q extends { type: string } = never
+> {
     name: string;
     specification: SpecificationOf<T, U>;
     givens: T;
-    handle: (row: SpecificationRow<U>) => Promise<void>;
-    quarantine?: (row: SpecificationRow<U>, event: NoProgressEvent<U>) => Promise<void>;
+    completes: CompletionConstructor<C>;
+    handle: (row: SpecificationRow<U>) => Promise<C>;
+    quarantine?: {
+        produces: CompletionConstructor<Q>;
+        fact: (row: SpecificationRow<U>, event: NoProgressEvent<U>) => Promise<Q>;
+    };
 
     limiter?: Limiter;             // a private budget instead of the worker's shared one
     retry?: RetryPolicy;           // default { maxAttempts: 5, baseMs: 1_000, capMs: 30_000 }
@@ -135,6 +156,34 @@ its type is the specification's own `T`, so passing too few givens is a compile
 error. `subscribeRows` and `queryRows` take them variadically, and the library
 spreads.
 
+`handle` returns the completion fact and the library asserts it (§3.4).
+`completes` is the constructor of the fact it returns, and it is not derivable
+from `handle` (Art. 2): a closure's return value cannot be read statically, and
+the type is erased at runtime. It is the one value that carries the fact's
+identity to declaration time, which is where the check has to happen to be worth
+anything.
+
+`Type: LiteralType<C>` is what survives erasure. It carries the erased type's
+literal into a value `defineConsumer` compares against the specification's
+inverses, so a specification with no `notExists` on the completion fact is
+rejected before a single row is dispatched. It also rejects a fact class whose
+`type` widened to `string` — the declaration in which nothing could be checked.
+The discipline it requires is jinaga's own documented idiom:
+
+```ts
+class InvitationMirrored {
+    static Type = "Blog.Invitation.Mirrored" as const;
+    type = InvitationMirrored.Type;
+    constructor(public invitation: Invitation) {}
+}
+```
+
+`quarantine` is a group because a constructor with no factory, and a factory
+with no constructor, are states the problem does not contain; grouping them
+removes both (Art. 1, 3). The asymmetry with
+`completes`/`handle` is not an inconsistency: those two are each required, so
+there is no invalid pair to remove and nothing for a group to buy.
+
 A consumer's `limiter` is not another spelling of the worker's. The worker's is
 the shared budget; a consumer's replaces it with a private one. They mean
 different things, so both are kept.
@@ -142,8 +191,8 @@ different things, so both are kept.
 ### 2.3 Events
 
 `kind` and `error` are one axis, not two. A `failed` event always carries the
-rejection; a `stalled` event has no error to carry, because the handler
-resolved. Modelled as a union, neither `{ kind: "stalled", error }` nor
+rejection; a `stalled` event has no error to carry, because the completion fact
+was stored. Modelled as a union, neither `{ kind: "stalled", error }` nor
 `{ kind: "failed" }` can be constructed (Art. 3).
 
 ```ts
@@ -212,12 +261,15 @@ const invitations = defineConsumer({
     name: "invitation-mirror",
     specification: outstandingInvitations,
     givens: [tenant],
+    completes: InvitationMirrored,
     handle: async row => {
         await repo.upsertInvitation(pool, row.result, j.hash(row.result));
-        await j.fact(new InvitationMirrored(row.result));
+        return new InvitationMirrored(row.result);
     },
-    quarantine: async (row, e) => {
-        await j.fact(new InvitationQuarantined(row.result, describe(e), new Date()));
+    quarantine: {
+        produces: InvitationQuarantined,
+        fact: async (row, e) =>
+            new InvitationQuarantined(row.result, describe(e), new Date()),
     },
 });
 
@@ -285,17 +337,19 @@ type RowState<U> =
 
 Four phases for four situations (Art. 1, 3). `attempts` is absent from
 `quarantined` because a quarantined row is never attempted again, so the count
-has nothing left to govern.
+has nothing left to govern. `completed` means the completion fact is in the
+store. The attempt covers the handler and the assertion together (§3.4), so a
+handler that returns a fact the store rejects leaves the row `waiting`.
 
 | From | Event | To |
 | --- | --- | --- |
 | *absent* | admitted from either discovery path | `dispatching` |
-| `dispatching` | handler resolves | `completed` |
-| `dispatching` | handler rejects or times out, `attempts < maxAttempts` | `waiting` |
-| `dispatching` | handler rejects or times out, `attempts = maxAttempts` | `quarantined`, after `quarantine()` and one `failed` event |
+| `dispatching` | the completion fact is stored | `completed` |
+| `dispatching` | the attempt rejects or times out, `attempts < maxAttempts` | `waiting` |
+| `dispatching` | the attempt rejects or times out, `attempts = maxAttempts` | `quarantined`, after `quarantine` and one `failed` event |
 | `waiting` | `retryAt` reached | `dispatching` |
 | `completed` | a sweep still returns the row, `attempts < maxAttempts` | `dispatching` |
-| `completed` | a sweep still returns the row, `attempts = maxAttempts` | `quarantined`, after `quarantine()` and one `stalled` event |
+| `completed` | a sweep still returns the row, `attempts = maxAttempts` | `quarantined`, after `quarantine` and one `stalled` event |
 | *any* | `removed` change, or a sweep omits the row | *absent* |
 
 Memory is bounded by the outstanding set, not by throughput: every entry is
@@ -322,9 +376,13 @@ enqueues (the library owns it), and the consumer's own turn does the work:
 
 ```
 acquire a slot from the limiter
-  attempt = withTimeout(handle(row), handlerTimeoutMs)
+  attempt = withTimeout(handle(row).then(fact => j.fact(fact)), handlerTimeoutMs)
 release the slot            // released before any backoff wait, not held across it
 ```
+
+The library asserts the fact the handler returns. `handlerTimeoutMs` bounds the
+handler and that write together, because the attempt is not done until the fact
+is stored; a rejection from either is a rejection of the attempt.
 
 A timeout counts as a rejection. The abandoned handler keeps running —
 JavaScript offers no way to cancel it — which is one of the two reasons the
@@ -347,28 +405,36 @@ full sweep interval and time-to-quarantine stays predictable.
 
 On either transition into `quarantined`, in this order:
 
-1. `await withTimeout(quarantine(row, event), handlerTimeoutMs)`, when supplied.
-2. Move the row to `quarantined`, **whether or not step 1 succeeded**. A
-   quarantine callback that throws must not put the row back in circulation; the
-   failure is logged and the event still fires.
+1. `await withTimeout(quarantine.fact(row, event).then(f => j.fact(f)), handlerTimeoutMs)`,
+   when the group is supplied. As in §3.4, the bound covers the callback and the
+   write together.
+2. Move the row to `quarantined`, **whether or not step 1 succeeded**. A factory
+   that throws, or a write the store rejects, must not put the row back in
+   circulation; the failure is logged and the event still fires.
 3. Emit `onNoProgress` once, bounded by `handlerTimeoutMs`, so the callback
    cannot wedge the loop it exists to report on.
 
 Thereafter the row is skipped on every sweep, and on every addition but the
-stale one of §3.3. Nothing durable is written by the library, so a restart clears the map and retries — consistent with the rest of
-the design, where nothing lives outside the graph.
+stale one of §3.3. The `quarantined` phase is the library's record of that
+suppression and nothing more: a restart clears the map. What survives a restart
+is the quarantine fact, and only a consumer that declares one has it — a
+consumer that declines the group retries the row in the next process, forever
+(§4).
 
 ### 3.7 Non-progress
 
 Two diagnoses, opposite responses:
 
-- **`failed`** — the handler rejected `maxAttempts` times. Operational, usually
-  transient. Quarantine and let a restart retry.
-- **`stalled`** — the handler *resolved* `maxAttempts` times and a subsequent
-  `queryRows` still contains the `rowHash`. A programming error that will not
-  resolve on its own: a missing `notExists`, a completion fact of the wrong
-  type, a handler that silently no-ops, or a completion fact the replicator's
-  authorization rules reject. SIGTERM is an honest response.
+- **`failed`** — the attempt rejected `maxAttempts` times: the handler rejected,
+  or the completion fact it returned was rejected by the replicator's
+  authorization rules. Operational, usually transient. Quarantine and let a
+  restart retry. An authorization denial reaches the event as its `error`,
+  because the library performs that write and sees the rejection.
+- **`stalled`** — the completion fact was *stored* `maxAttempts` times and a
+  subsequent `queryRows` still contains the `rowHash`. A programming error that
+  will not resolve on its own: the fact carries the declared type, so it was
+  written against a predecessor the specification does not read, and the row
+  goes on matching its own outstanding set. SIGTERM is an honest response.
 
 `stalled` is decided by the sweep, never by the absence of a removal
 notification — the `completed` rows of §3.3's table. The event names the
@@ -384,7 +450,7 @@ declaration. Diagnostics should quote it.
 4. resolve with { drained, abandoned }
 ```
 
-Rows that finish write their completion facts and are clean. Rows past the
+A row that finishes has its completion fact stored and is clean. Rows past the
 deadline are abandoned, still running, and redelivered after a restart —
 at-least-once holds either way. A wedged handler cannot hold the process open
 past the deadline.
@@ -394,11 +460,11 @@ past the deadline.
 ## 4. The quarantine pattern
 
 **Read this before deploying a worker.** The library calls back when a row has
-exhausted its attempts; it does not write anything. The fact type, the
-specification condition, and the write are the application's. Without them a
-poison row is suppressed in memory for the life of one process and re-attempted
-by the next one, forever. That is the documented consequence of declining the
-pattern, not a defect.
+exhausted its attempts, and asserts the fact the callback returns. The fact type
+and the specification condition are the application's. A consumer that declares
+no `quarantine` group gets no callback, and its poison rows are suppressed in
+memory for the life of one process and re-attempted by the next one, forever.
+That is the documented consequence of declining the pattern, not a defect.
 
 ### 4.1 Define the fact
 
@@ -430,13 +496,19 @@ const outstandingInvitations = model.given(Tenant).match((tenant, facts) =>
 );
 ```
 
-### 4.3 Write it from the callback
+### 4.3 Return it from the callback
 
 ```ts
-quarantine: async (row, e) => {
-    await j.fact(new InvitationQuarantined(row.result, describe(e), new Date()));
+quarantine: {
+    produces: InvitationQuarantined,
+    fact: async (row, e) =>
+        new InvitationQuarantined(row.result, describe(e), new Date()),
 }
 ```
+
+`produces` is what `defineConsumer` matches against the `notExists` of §4.2. A
+group whose fact type the specification does not exclude is refused there, at
+declaration, before the consumer reaches a worker.
 
 ### 4.4 Model release as a successor
 
@@ -470,9 +542,10 @@ the pattern.
 ### 4.6 Authorization
 
 The worker's principal must be authorized to write both the completion fact and
-the quarantine fact. A denial on either throws at the client, leaves the row
-outstanding, and surfaces as `stalled` — correct, but only legible if the
-diagnostics name the fact type.
+the quarantine fact. A denial on the completion rejects the attempt and surfaces
+as `failed` carrying the rejection (§3.7). A denial on the quarantine leaves the
+row quarantined in memory only, logged at step 2 of §3.6, so the next process
+attempts it again.
 
 ---
 
@@ -557,10 +630,13 @@ reverted:
 - does not dispatch from inside the notification (no `observable_notify_reentrant`)
 - re-attempts a rejected row on backoff and stops at `retry.maxAttempts`
 - releases the limiter slot while waiting to retry
-- calls `quarantine` exactly once when attempts are exhausted
-- quarantines even when the `quarantine` callback throws
+- asserts the fact the handler returns, once per successful attempt
+- rejects at `defineConsumer` a specification with no `notExists` on `completes.Type`, and one with no `notExists` on a declared `quarantine.produces.Type`
+- reports `failed`, carrying the rejection, when the completion fact is rejected
+- calls `quarantine.fact` exactly once when attempts are exhausted, and asserts what it returns
+- quarantines even when `quarantine.fact` throws, and when its assertion is rejected
 - skips a quarantined row on every later sweep, and emits `onNoProgress` once
-- reports `stalled` when the handler resolves and a later sweep still returns the row
+- reports `stalled` when the completion fact is stored and a later sweep still returns the row
 - clears row state when a row leaves the set by either path
 - dispatches a row once when its `added` arrives after its `removed`
 - bounds total in-flight work across several consumers by one shared limiter
@@ -595,10 +671,12 @@ can disagree with the map, it was being maintained rather than derived.
 
 Settled after the RFC, in the order they were taken:
 
-1. **Quarantine is the application's.** The library defines a callback and
-   documents the pattern; the fact type, the specification condition, and the
-   write belong to the application. Declining it means no dead-letter
-   protection, stated plainly rather than warned about.
+1. **The fact types are the application's; the assertion is the library's.** The
+   completion and quarantine fact types, their meaning, and the `notExists` that
+   excludes each belong to the application. The callbacks return the facts and
+   the library asserts them, because holding the write is what lets a declared
+   type be checked against the specification (§2.2). Declining quarantine means
+   no dead-letter protection, stated plainly rather than warned about.
 2. **A worker host.** `createWorker` owns the Jinaga instance, the shared
    limiter and the diagnostics. Consumers are passed to it. One lifecycle, one
    `stop()`.
@@ -634,31 +712,38 @@ rediscovered.
 | 4 | Does one variable's valid range depend on another's value? | No. `retry` groups the three knobs that are read together, and no knob's meaning depends on another's value. |
 | 5 | Do frequently changing decisions live inside rarely changing mechanism? | No. Retry is a `RetryPolicy` value the loop reads (§3.5); the loop has no policy branches. |
 | 6 | Does the top layer read as steps rather than intent? | No. A consumer is a declaration — specification, handler, quarantine — and §3.3's table is the mechanism that gives it meaning. |
-| 7 | Can a well-formed specification produce a broken system? | **Yes.** Tension T2. |
-| 8 | Does one intended change force coordinated changes elsewhere? | **Yes, in one place.** Tension T1. |
+| 7 | Can a well-formed specification produce a broken system? | **Yes, in one way.** A completion fact of the declared type written against the wrong predecessor. Tension T2. |
+| 8 | Does one intended change force coordinated changes elsewhere? | **Yes, in one place**, refused at declaration. Tension T1. |
 
 ### 10.2 Tensions
 
 **T1 — The quarantine condition and the quarantine callback co-vary (Art. 8).**
-A consumer can supply `quarantine` and forget the `notExists` in its
-specification, or add the condition and no callback. The consistency is
-maintained by hand across two sites, which the constitution names as latent
-redundancy. It is not accidental coupling: the project has decided the fact type
-belongs to the application, and the library cannot compose a condition onto a
-specification it did not build. The compromise is to express the coupling once —
-in the pattern of §4 — and to detect its violation at runtime as `stalled`
-rather than to leave it silent. If jinaga.js ever offers a combinator that
-composes `notExists` onto an existing `SpecificationOf`, the library should
-derive the condition from the declaration and this tension closes by Article 2.
+A consumer supplies `quarantine` and the `notExists` in its specification that
+excludes the fact it produces. The consistency is maintained by hand across two
+sites, which the constitution names as latent redundancy. It is not accidental
+coupling: the project has decided the fact type belongs to the application, and
+the library cannot compose a condition onto a specification it did not build.
+jinaga offers no combinator that composes `notExists` onto a `SpecificationOf`,
+so the tension does not close by Article 2. It is bounded instead:
+`quarantine.produces` carries the fact's type to declaration time, and
+`defineConsumer` refuses a group whose type no `notExists` excludes. The
+coupling is expressed once, in the pattern of §4, and breaking it costs a
+rejected declaration.
 
-**T2 — The specification language is not closed (Art. 7).** A syntactically
-valid specification with no terminating `notExists` produces a consumer that
-runs forever and never progresses. The RFC declined to enforce this
-syntactically, on the grounds that a runtime detector catches strictly more —
-an omitted condition, a completion of the wrong type, a silent no-op handler,
-and an authorization denial alike. That reasoning stands, and the cost is stated
-plainly: the invariant lives in the author's vigilance and in `stalled`, not in
-the grammar. This library cannot close a language it does not own.
+**T2 — The specification language is not closed (Art. 7).** A well-formed
+specification can produce a broken system in one way: a completion fact of the
+declared type, written against a predecessor the specification does not read.
+The library cannot check that one. It does not know which member of the
+projection should hold the row, so it cannot say which predecessor the fact was
+owed. The case runs, reaches `maxAttempts`, and reports as `stalled`.
+
+Three neighbouring failures are refused earlier. A specification carrying no
+`notExists` on `completes.Type`, and one whose condition names a different fact
+type, are both refused by `defineConsumer`, which compares that literal against
+the specification's inverses. A handler that resolves without producing a fact
+does not compile, because `handle` returns `Promise<C>`. What remains lives in
+the author's vigilance and in `stalled` rather than in the grammar; this library
+cannot close a language it does not own.
 
 **T3 — The `completed` phase duplicates the graph (Appendix).** Whether a row
 has been handled is already recorded in the fact graph by the completion fact.
