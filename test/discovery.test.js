@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { buildModel, JinagaTest } = require("jinaga");
 const { defineConsumer, createWorker } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
+const { retiringOn } = require("./outstanding-specification.js");
 
 // A given is a fact, and discovery asks nothing of one but its hash.
 const tenant = id => ({ type: "Test.Tenant", id });
@@ -183,7 +184,7 @@ function workerOver(t, stream, query, handle, options = {}) {
     consumers: [
       defineConsumer({
         name: "invitations",
-        specification: { name: "invitations" },
+        specification: retiringOn(Mirrored.Type),
         givens: [tenant("invitations")],
         completes: Mirrored,
         handle,

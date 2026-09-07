@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const { defineConsumer, createWorker } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
+const { retiringOn } = require("./outstanding-specification.js");
 
 // A given is a fact, and the only thing the lifecycle asks of one is its hash.
 const tenant = id => ({ type: "Test.Tenant", id });
@@ -28,8 +29,8 @@ function fakeJinaga(streams = {}) {
   return {
     hash: fact => `hash-of-${fact.id}`,
     onDistributionDiagnostic: () => {},
-    subscribeRows: async specification => {
-      const open = streams[specification.name];
+    subscribeRows: async (specification, given) => {
+      const open = streams[given.id];
       if (open === undefined) {
         return openStream();
       }
@@ -66,11 +67,12 @@ function deferred() {
   return { promise, ...settle };
 }
 
-// The specification is opaque to the lifecycle; only its identity matters, and
-// the fake Jinaga keys its streams on the name.
+// The lifecycle never runs the specification; the fake Jinaga keys its streams
+// on the consumer's given. It is a real one because `defineConsumer` inverts it
+// to check that the consumer can retire the row it is given.
 const consumerOf = (name, handle, options = {}) => defineConsumer({
   name,
-  specification: { name },
+  specification: retiringOn(Mirrored.Type),
   givens: [tenant(name)],
   completes: Mirrored,
   handle,

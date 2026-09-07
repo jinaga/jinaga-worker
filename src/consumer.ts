@@ -9,6 +9,7 @@ import {
 } from "jinaga";
 import { Limiter } from "./limiter";
 import { NoProgressEvent } from "./no-progress";
+import { requireRetiringType, retiringTypes } from "./retirement";
 import { DEFAULT_RETRY_POLICY, RetryPolicy } from "./retry";
 
 /**
@@ -181,6 +182,14 @@ export interface Consumer {
  * Declare a consumer. The declaration is complete once this returns: the
  * specification, the givens and the handler are fixed together, and the
  * defaults of section 6 are resolved here, where they have their one home.
+ *
+ * Throws when a declared fact type is one the specification never excludes,
+ * because such a consumer cannot retire the row it is given. This is the
+ * earliest point the comparison can be made: `Type` carries the erased fact's
+ * identity here, and the specification's inverses say what actually shrinks the
+ * outstanding set. The constitution would prefer the state be unrepresentable
+ * rather than rejected, and this library cannot reach that — the specification
+ * language belongs to jinaga (§10.2 T2).
  */
 export function defineConsumer<
     T extends unknown[],
@@ -193,6 +202,18 @@ export function defineConsumer<
     const sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
     const capacity = options.capacity ?? DEFAULT_ROW_STREAM_CAPACITY;
     const quarantine = options.quarantine;
+
+    const retiring = retiringTypes(options.specification.specification);
+    requireRetiringType(options.name, "completes", options.completes.Type, retiring);
+    if (quarantine !== undefined) {
+        requireRetiringType(
+            options.name,
+            "quarantine.produces",
+            quarantine.produces.Type,
+            retiring
+        );
+    }
+
     return {
         name: options.name,
         limiter: options.limiter,
