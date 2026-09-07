@@ -187,9 +187,7 @@ export interface Consumer {
  * because such a consumer cannot retire the row it is given. This is the
  * earliest point the comparison can be made: `Type` carries the erased fact's
  * identity here, and the specification's inverses say what actually shrinks the
- * outstanding set. The constitution would prefer the state be unrepresentable
- * rather than rejected, and this library cannot reach that — the specification
- * language belongs to jinaga (§10.2 T2).
+ * outstanding set.
  */
 export function defineConsumer<
     T extends unknown[],
