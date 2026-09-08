@@ -336,7 +336,8 @@ Neither executes anything. Both funnel into one admission gate.
 A pass that fails offers nothing and retracts nothing, and does not end the
 series. It is counted, and the failure kept, because the row counts cannot show
 it: a backstop that has stopped recovering anything looks from the map exactly
-like one with nothing to recover. `status()` reports both (§2.4).
+like one with nothing to recover. `status()` reports both (§2.4). A pass whose
+read outlives discovery is neither: it offers nothing and it reports nothing.
 
 ### 3.3 Row state
 

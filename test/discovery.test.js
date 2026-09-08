@@ -563,6 +563,34 @@ test("a sweep in flight when stop() lands admits nothing", { timeout: DEADLINE_M
   assert.equal(worker.status().consumers[0].lastSweep, undefined);
 });
 
+test("a sweep that fails after stop() lands reports nothing", { timeout: DEADLINE_MS }, async t => {
+  const stream = controllableStream();
+  const reading = deferred();
+  const query = controllableQuery([row("r1")]);
+  query.read = async () => {
+    query.calls += 1;
+    await reading.promise;
+    throw new Error("feed_not_found");
+  };
+  const worker = workerOver(t, stream, query, recordingHandler());
+
+  await worker.start();
+  while (query.calls === 0) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  await worker.stop();
+  reading.resolve();
+  await quiesce();
+
+  // The pass outlived discovery, so it is neither a success nor a failure: its
+  // rejection is a fact about a backstop the consumer no longer has.
+  const status = worker.status().consumers[0];
+  assert.equal(status.sweepFailures, 0, "a pass that outlived discovery was counted");
+  assert.equal(status.lastSweepFailure, undefined);
+  assert.equal(status.lastSweep, undefined);
+});
+
 test("an added and a removed for the same row leave the map in the state the table prescribes", { timeout: DEADLINE_MS }, async t => {
   for (const order of [["added", "removed"], ["removed", "added"]]) {
     const stream = controllableStream();
