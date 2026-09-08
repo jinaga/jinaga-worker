@@ -1,22 +1,21 @@
 # jinaga-worker
 Worker process that services a Jinaga queue
 
-## Status
+## What the library does
 
-This repository is scaffolded for RFC #251 in `jinaga/jinaga.js`:
-- TypeScript package build output (`dist`)
-- Peer dependency on `jinaga` ^6.12.0, which is where the row-stream seam
-  (`queryRows`, `subscribeRows`) landed — see jinaga/jinaga.js#250
-- `defineConsumer` and `createWorker`: the consumer declaration and the worker
-  lifecycle from [the specification](design/durable-consumer-spec.md)
-- Discovery: the row stream and the backstop sweep, funnelled into one
-  admission gate and deduplicated on `rowHash`
-- Dispatch: on its own turn, under a concurrency budget and a handler deadline,
-  with the backoff between attempts read from a `RetryPolicy`
-- Non-progress: a row that runs out of attempts is quarantined and reported once
-  through `onNoProgress`, as `failed` or as `stalled`
-- CI workflow for build + test
-- Publish workflow scaffolded but intentionally disabled
+A durable consumer's outstanding work is a specification. A row leaves the set
+when a fact is written about it — a completion on the happy path, a quarantine
+on the failure path — so progress lives in the fact graph and a restart has no
+cursor to recover. `defineConsumer` declares a consumer, and `createWorker` runs
+a fixed set of them.
+
+- **Discovery.** The row stream and the backstop sweep funnel into one admission
+  gate, deduplicated on `rowHash`.
+- **Dispatch.** A row is handled on its own turn, under a concurrency budget and
+  a handler deadline, with the backoff between attempts read from a
+  `RetryPolicy`.
+- **Non-progress.** A row that runs out of attempts is quarantined and reported
+  once through `onNoProgress`, as `failed` or as `stalled`.
 
 ## Before you deploy a worker
 
@@ -26,3 +25,9 @@ This repository is scaffolded for RFC #251 in `jinaga/jinaga.js`:
   condition, the group, and what declining the pattern costs
 - [Constraints inherited from jinaga](docs/inherited-constraints.md): platform
   properties that are silent when violated
+
+## Contributing
+
+[CONTRIBUTING.md](https://github.com/jinaga/jinaga-worker/blob/main/CONTRIBUTING.md)
+carries the specification this package implements, the constitution it answers
+to, and how to build and test the repository.
