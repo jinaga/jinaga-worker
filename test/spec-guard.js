@@ -169,10 +169,16 @@ function readSpecBlocks(content = fs.readFileSync(specPath, "utf8")) {
     let open = null;
 
     for (const line of specSections(content)) {
-        const fence = /^```(.*)$/.exec(line);
+        // A fence carries whatever indentation its surroundings give it — a
+        // block inside a list item is indented — and a reader anchored at
+        // column one would not see such a block at all, which is the silent
+        // skip this guard exists to prevent. The opening fence's indentation
+        // is what the block is written against, so it comes back off here and
+        // the block is read as it was written.
+        const fence = /^([ \t]*)```(.*)$/.exec(line);
         if (fence !== null) {
             if (open === null) {
-                open = { language: fence[1].trim(), body: [] };
+                open = { indent: fence[1], language: fence[2].trim(), body: [] };
             }
             else {
                 if (open.language === "ts") {
@@ -181,7 +187,11 @@ function readSpecBlocks(content = fs.readFileSync(specPath, "utf8")) {
                     blocks.push({
                         key: `${section}#${ordinal}`,
                         section,
-                        body: open.body.join("\n")
+                        body: open.body
+                            .map(text => text.startsWith(open.indent)
+                                ? text.slice(open.indent.length)
+                                : text.trimStart())
+                            .join("\n")
                     });
                 }
                 open = null;
@@ -210,7 +220,7 @@ function isIllustration(block) {
 
 /** The names a block declares at its top level. */
 function declaredNames(body) {
-    const declaration = /^(?:export\s+)?(?:declare\s+)?(?:interface|type|class|function|enum)\s+([A-Za-z_$][\w$]*)/gm;
+    const declaration = /^[ \t]*(?:export\s+)?(?:declare\s+)?(?:interface|type|class|function|enum)\s+([A-Za-z_$][\w$]*)/gm;
     const names = [];
     for (const match of body.matchAll(declaration)) {
         names.push(match[1]);
@@ -256,8 +266,8 @@ function staleNames(block, entry = block.entry ?? BLOCKS[block.key]) {
  */
 function normalize(body, ambient) {
     return ambient
-        ? body.replace(/^(export\s+)?(function|class)\s/gm, (all, exported, kind) =>
-            `${exported ?? ""}declare ${kind} `)
+        ? body.replace(/^([ \t]*)(export\s+)?(function|class)\s/gm, (all, indent, exported, kind) =>
+            `${indent}${exported ?? ""}declare ${kind} `)
         : body;
 }
 

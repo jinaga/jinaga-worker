@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const {
   BLOCKS,
+  declaredNames,
   isIllustration,
   doublyDisposedBlocks,
   readSpecBlocks,
@@ -114,6 +115,34 @@ test("a ts block the extraction cannot compile fails the guard", () => {
   };
   const result = guardIn("uncompilable", { spec: [...blocks, broken] });
   assert.equal(result.ok, false, "a block that does not compile was not reported");
+});
+
+// Indentation is the one formatting change that could take a block out of the
+// guard's sight rather than failing it: a reader anchored at column one sees no
+// fence, so the block is neither compiled nor reported.
+test("an indented ts block is read as it was written", () => {
+  const markdown = [
+    "## 2. API",
+    "",
+    "### 2.9 A subsection the specification does not have",
+    "",
+    "- A block that sits inside a list item:",
+    "",
+    "  ```ts",
+    "  export interface Indented {",
+    "      member: string;",
+    "  }",
+    "  ```",
+    "",
+    "## 4. The quarantine pattern"
+  ].join("\n");
+
+  const indented = readSpecBlocks(markdown);
+  assert.equal(indented.length, 1, "the indented block was passed over");
+  assert.equal(indented[0].key, "2.9#1");
+  assert.equal(indented[0].body, "export interface Indented {\n    member: string;\n}");
+  assert.deepEqual(declaredNames(indented[0].body), ["Indented"]);
+  assert.deepEqual(unregisteredBlocks(indented), ["2.9#1"], "an indented block must still be accounted for");
 });
 
 test("a ts block no disposition covers is reported rather than skipped", () => {
