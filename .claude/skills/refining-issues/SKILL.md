@@ -9,7 +9,7 @@ An issue is finished refining when an agent holding no context but the issue
 body can implement it, and when landing it leaves the tree in a state somebody
 would ship.
 
-That is the bar the `ready` label asserts. `.claude/skills/night-shift/SKILL.md`
+That is the bar the `ready` label asserts. `.claude/skills/night-shift-worker/SKILL.md`
 is what consumes the label: a scheduled agent reads the issue, the spec sections
 it names and the constitution articles its conformance criteria cite, and works
 it with nobody watching. Refining is what makes that possible. Applying the
