@@ -145,9 +145,9 @@ export interface ConsumerOptions<
 
 /** Retry policy is a value the loop reads, not branches inside it. */
 export interface RetryPolicy {
-    maxAttempts: number;
-    baseMs: number;
-    capMs: number;
+    readonly maxAttempts: number;
+    readonly baseMs: number;
+    readonly capMs: number;
 }
 ```
 
@@ -257,6 +257,8 @@ it describes (Art. 2). `lastSweep` is one optional, because an `at` without a
 ### 2.5 The shape of a worker
 
 ```ts
+// Illustration: the second consumer's options are elided, so this block is not
+// compiled against the shipped types the way the blocks above it are.
 const invitations = defineConsumer({
     name: "invitation-mirror",
     specification: outstandingInvitations,
@@ -331,15 +333,18 @@ intersection of several sets.
 type RowState<U> =
     | { phase: "dispatching"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "waiting";     row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; retryAt: number }
-    | { phase: "completed";   row: SpecificationRow<U>; attempts: number }
+    | { phase: "completed";   row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "quarantined"; row: SpecificationRow<U> };
 ```
 
-Four phases for four situations (Art. 1, 3). `attempts` is absent from
-`quarantined` because a quarantined row is never attempted again, so the count
-has nothing left to govern. `completed` means the completion fact is in the
-store. The attempt covers the handler and the assertion together (§3.4), so a
-handler that returns a fact the store rejects leaves the row `waiting`.
+Four phases for four situations (Art. 1, 3). `attempts` and `firstAttemptAt` are
+on the phases where they govern something: the attempt limit, and the elapsed
+time a non-progress report carries. A row reaches exhaustion from `dispatching`
+and from `completed` alike, so both carry them, and a quarantined row is never
+attempted again and never reported again, so it carries neither. `completed`
+means the completion fact is in the store. The attempt covers the handler and
+the assertion together (§3.4), so a handler that returns a fact the store
+rejects leaves the row `waiting`.
 
 | From | Event | To |
 | --- | --- | --- |
