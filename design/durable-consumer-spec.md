@@ -304,7 +304,8 @@ process.on("SIGTERM", async () => { await worker.stop(); await pool.end(); });
 
 This process serves a health endpoint, so its boot is bounded: `start()` settles
 within ten seconds either way, rather than holding the routes that answer
-without the replicator behind one that may never answer. §3.1 gives the two
+without the replicator behind one that may never answer. `startTimeoutMs` is a
+worker option, and §6 gives it and its absent default; §3.1 gives the two
 rejections and what each is worth doing about.
 
 ---
@@ -340,8 +341,9 @@ each subscribe waits as long as the replicator takes.
   denial until somebody changes a distribution rule.
 - **`FeedTimeoutError`** — the replicator did not answer inside
   `startTimeoutMs`, which usually resolves on its own. jinaga raises it and it
-  reaches the caller unwrapped. This package's `TimeoutError` means one thing, a
-  handler that outran `handlerTimeoutMs` (§3.4).
+  reaches the caller unwrapped. This package's `TimeoutError` means one thing:
+  the `withTimeout` of §3.4 expiring on a handler that outran
+  `handlerTimeoutMs`.
 
 A rejection leaves nothing running. Every stream is stopped and every sweep
 timer is cleared — the path a structural denial already takes — and the consumer
