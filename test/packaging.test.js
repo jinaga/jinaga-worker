@@ -22,14 +22,23 @@ test("publish workflow is present but disabled", async () => {
 
 // The tarball is the authority on what ships, so read it rather than restating
 // `files` here: a second copy of that list would drift the moment `files` moved.
+//
+// A pack listing names paths inside the archive, and npm roots an archive at
+// `package/`. Strip that root and take the report as either shape, so the set is
+// repo-relative whatever npm hands back — a set in the other shape would match
+// nothing, and a check that matches nothing passes.
 function shippedFiles() {
   const output = execFileSync("npm", ["pack", "--dry-run", "--json"], {
     cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"]
   });
-  const [tarball] = JSON.parse(output.slice(output.indexOf("[")));
-  return new Set(tarball.files.map((file) => file.path));
+  const start = output.search(/[[{]/);
+  assert.ok(start >= 0, `npm pack reported no JSON: ${output}`);
+
+  const reported = JSON.parse(output.slice(start));
+  const [tarball] = Array.isArray(reported) ? reported : [reported];
+  return new Set(tarball.files.map((file) => file.path.replace(/^package\//, "")));
 }
 
 test("README.md names only paths the installed package carries", () => {
