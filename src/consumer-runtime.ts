@@ -40,6 +40,8 @@ export class ConsumerRuntime {
     private stream: RowStream<unknown> | undefined;
     private sweepTimer: ReturnType<typeof setInterval> | undefined;
     private lastSweep: { at: Date; size: number } | undefined;
+    private lastSweepFailure: { at: Date; error: unknown } | undefined;
+    private sweepFailures = 0;
 
     constructor(
         private readonly j: Jinaga,
@@ -128,7 +130,13 @@ export class ConsumerRuntime {
      *
      * A sweep reports its own failure and settles either way, so the timer that
      * schedules it has no rejection to handle and one pass that fails does not
-     * end the series.
+     * end the series. A failure is counted and kept as well as logged, because
+     * a backstop that offers nothing leaves no mark on the rows it would have
+     * offered, and `status()` is where an operator looks (§2.4).
+     *
+     * A pass that outlives discovery is neither, on both paths alike: what it
+     * found may not be admitted, and what it failed with is a fact about a
+     * backstop the consumer no longer has.
      */
     private async sweep(): Promise<void> {
         const held = new Set(this.rows.keys());
@@ -153,8 +161,13 @@ export class ConsumerRuntime {
                 this.offer(rowHash, { kind: "removed" });
             }
             this.lastSweep = { at: new Date(at), size: rows.length };
+            this.sweepFailures = 0;
         }
         catch (error) {
+            if (this.discovering) {
+                this.sweepFailures += 1;
+                this.lastSweepFailure = { at: new Date(at), error };
+            }
             this.logger.error(
                 `${this.consumer.name}: sweep failed`,
                 { consumer: this.consumer.name, error }
@@ -465,7 +478,11 @@ export class ConsumerRuntime {
             givenHash: this.givenHash,
             ...countRows(this.rows),
             dropped: this.stream?.dropped ?? 0,
-            ...(this.lastSweep === undefined ? {} : { lastSweep: this.lastSweep })
+            sweepFailures: this.sweepFailures,
+            ...(this.lastSweep === undefined ? {} : { lastSweep: this.lastSweep }),
+            ...(this.lastSweepFailure === undefined
+                ? {}
+                : { lastSweepFailure: this.lastSweepFailure })
         };
     }
 }

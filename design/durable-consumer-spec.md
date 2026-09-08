@@ -89,7 +89,7 @@ export interface Worker {
     start(): Promise<void>;
     /** Stop discovery, drain in-flight work to a deadline, release feeds. */
     stop(): Promise<StopReport>;
-    /** A snapshot for a health or metrics endpoint. Entirely derived. */
+    /** A snapshot for a health or metrics endpoint. */
     status(): WorkerStatus;
 }
 ```
@@ -237,7 +237,9 @@ export interface ConsumerStatus {
     completed: number;
     quarantined: number;
     dropped: number;               // RowStream.dropped — read through, never copied
+    sweepFailures: number;         // failed passes since the last successful one
     lastSweep?: { at: Date; size: number };
+    lastSweepFailure?: { at: Date; error: unknown };
 }
 
 /** Shared concurrency budget. One instance bounds several consumers together. */
@@ -249,10 +251,18 @@ export class Limiter {
 }
 ```
 
-Every count in `ConsumerStatus` is computed on call by tallying the row-state
-map in §3.3. None is maintained incrementally, so none can drift from the state
-it describes (Art. 2). `lastSweep` is one optional, because an `at` without a
-`size` is not a state the problem contains.
+Every row count in `ConsumerStatus` is computed on call by tallying the
+row-state map in §3.3. None is maintained incrementally, so none can drift from
+the state it describes (Art. 2). The sweep fields are primitive state instead:
+the map records phases of rows and says nothing about the passes that offered
+them, so neither a consecutive-failure count nor the last failure is derivable
+from it (§10.1, row 2).
+
+`lastSweep` is one optional, because an `at` without a `size` is not a state the
+problem contains. `lastSweepFailure` is a second optional beside it rather than
+a member of it: a consumer that has swept and never failed has a `lastSweep` and
+no failure, and one whose every pass has failed has the reverse, so both
+absences are states the problem contains (Art. 3).
 
 ### 2.5 The shape of a worker
 
@@ -322,6 +332,12 @@ Two paths, one execution path, deduplicated on `rowHash`:
   returns.
 
 Neither executes anything. Both funnel into one admission gate.
+
+A pass that fails offers nothing and retracts nothing, and does not end the
+series. It is counted, and the failure kept, because the row counts cannot show
+it: a backstop that has stopped recovering anything looks from the map exactly
+like one with nothing to recover. `status()` reports both (§2.4). A pass whose
+read outlives discovery is neither: it offers nothing and it reports nothing.
 
 ### 3.3 Row state
 
@@ -647,6 +663,7 @@ reverted:
 - bounds total in-flight work across several consumers by one shared limiter
 - `stop()` drains settled handlers and reports the abandoned count
 - a timed-out handler counts as a rejection, not as progress
+- counts consecutive sweep failures, keeps the last one beside the last successful pass, and clears the count on the next success
 - `status()` counts agree with the row-state map after every transition above
 
 The last one is the constitution's Article 2 as an executable check: if a count
@@ -712,7 +729,7 @@ rediscovered.
 | # | Question | Verdict |
 | --- | --- | --- |
 | 1 | Can I represent a state I would then have to forbid? | No. |
-| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` count is tallied from the row-state map on call; `dropped` is read through to `RowStream`. |
+| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` row count is tallied from the row-state map on call, and `dropped` is read through to `RowStream`. `sweepFailures` and `lastSweepFailure` are stored because they are primitive: the map holds phases of rows, not the passes that offered them, so neither is computable from it. |
 | 3 | Do two distinct configurations produce identical behavior? | No. A consumer's `limiter` and the worker's are distinct meanings — private budget versus shared — not two spellings of one. |
 | 4 | Does one variable's valid range depend on another's value? | No. `retry` groups the three knobs that are read together, and no knob's meaning depends on another's value. |
 | 5 | Do frequently changing decisions live inside rarely changing mechanism? | No. Retry is a `RetryPolicy` value the loop reads (§3.5); the loop has no policy branches. |

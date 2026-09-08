@@ -589,7 +589,8 @@ test("dispatching a row that has already left the set is harmless", { timeout: D
       waiting: 0,
       completed: 1,
       quarantined: 0,
-      dropped: 0
+      dropped: 0,
+      sweepFailures: 0
     },
     "the counts disagree with the map"
   );

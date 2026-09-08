@@ -52,7 +52,7 @@ export interface Worker {
     start(): Promise<void>;
     /** Stop discovery, drain in-flight work to a deadline, release feeds. */
     stop(): Promise<StopReport>;
-    /** A snapshot for a health or metrics endpoint. Entirely derived. */
+    /** A snapshot for a health or metrics endpoint. */
     status(): WorkerStatus;
 }
 
