@@ -101,6 +101,7 @@ export interface Worker {
 export interface WorkerOptions {
     consumers: readonly Consumer[];
     limiter?: Limiter;             // default new Limiter(8), shared by every consumer
+    startTimeoutMs?: number;       // no default; absent leaves start() unbounded
     shutdownTimeoutMs?: number;    // 30_000
     onNoProgress?: (event: NoProgressEvent) => void | Promise<void>;
     logger?: Logger;

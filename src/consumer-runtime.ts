@@ -69,17 +69,22 @@ export class ConsumerRuntime {
     /**
      * Log the given hash, open the row stream, and schedule the backstop sweep.
      *
-     * It rejects when `subscribeRows` rejects, which is a structural
-     * distribution denial: a worker not authorized for its own specification
-     * should fail to start rather than idle. The timer is scheduled only after
-     * the stream is running, so a rejection leaves nothing behind.
+     * It rejects when `subscribeRows` rejects: a structural distribution
+     * denial, because a worker not authorized for its own specification should
+     * fail to start rather than idle, or a `FeedTimeoutError` when
+     * `feedTimeoutMs` is given and the replicator does not answer inside it.
+     * The timer is scheduled only after the stream is running, so a rejection
+     * leaves nothing behind.
+     *
+     * `feedTimeoutMs` is what remains of the worker's start budget when this
+     * consumer's turn comes, and is absent when the worker set no bound.
      */
-    async start(): Promise<void> {
+    async start(feedTimeoutMs?: number): Promise<void> {
         this.logger.info(
             `${this.consumer.name}: given hash ${this.givenHash}`,
             { consumer: this.consumer.name, givenHash: this.givenHash }
         );
-        const stream = await this.consumer.subscribe(this.j);
+        const stream = await this.consumer.subscribe(this.j, feedTimeoutMs);
         this.stream = stream;
         // The loop runs for the life of the stream and ends when `stop()`
         // releases it. It reports its own failure, so there is nothing to await.
