@@ -48,7 +48,24 @@ export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 export const DEFAULT_CONCURRENCY = 8;
 
 export interface Worker {
-    /** Subscribe, sweep, and begin dispatching. */
+    /**
+     * Subscribe, sweep, and begin dispatching.
+     *
+     * It resolves when every consumer's stream is running, and rejects on a
+     * structural distribution denial, which will not self-heal. There is a
+     * third outcome: `subscribeRows` awaits the feed's first response, so a
+     * replicator that accepts the connection and never answers leaves
+     * `start()` pending indefinitely.
+     *
+     * Do not await `start()` in a boot path unless the process is supposed to
+     * fail when the replicator is unreachable. A service whose routes read its
+     * own local mirror holds every one of them behind that wait, `/health`
+     * included, and those routes are what let it answer while the replicator
+     * is away. Such a process starts the worker without awaiting it and
+     * reports the rejection instead.
+     *
+     * See `docs/inherited-constraints.md`.
+     */
     start(): Promise<void>;
     /** Stop discovery, drain in-flight work to a deadline, release feeds. */
     stop(): Promise<StopReport>;
@@ -78,15 +95,16 @@ export class WorkerHost implements Worker {
     }
 
     /**
-     * Start every consumer. It resolves when every stream is running, and
-     * rejects when any `subscribeRows` rejects, releasing the streams and
-     * timers of the consumers that did start.
+     * Start every consumer, in the order the options gave them. A rejection
+     * releases the streams and timers of the consumers that did start.
      *
      * The diagnostics channel is registered before the first subscribe, so a
      * feed the replicator reports as `reactive` is logged rather than lost. A
      * `reactive` decision is the subscription race and self-heals once the
      * authorizing fact arrives; the structural denial that will not self-heal
      * is what rejects here.
+     *
+     * @see Worker.start for the three outcomes, and what a boot path owes them.
      */
     async start(): Promise<void> {
         this.j.onDistributionDiagnostic(distributionDiagnostics(this.logger));

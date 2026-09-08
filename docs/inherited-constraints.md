@@ -66,6 +66,9 @@ a decision raised again later is reported again.
   `j.subscribe` does. A specification authorized only through an intersected
   rule reports `reactive` and delivers nothing, so declare a distribution rule
   matching the consumer's specification exactly.
-- `subscribeRows` awaits the feed's first response, so an unresponsive
-  replicator leaves `start()` pending. Bound it with the orchestrator's startup
-  probe.
+- `subscribeRows` awaits the feed's first response, so a replicator that
+  accepts the connection and never answers leaves `start()` pending
+  indefinitely. Do not await `start()` in a boot path unless the process is
+  supposed to fail when the replicator is unreachable. A service whose routes
+  read its own local mirror holds every one of them behind that wait,
+  `/health` included.
