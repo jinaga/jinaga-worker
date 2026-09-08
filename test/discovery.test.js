@@ -61,16 +61,29 @@ function controllableStream() {
   return stream;
 }
 
-/** The sweep's half of the seam: what `queryRows` returns, and how often it ran. */
+/**
+ * The sweep's half of the seam: what `queryRows` returns, and how often it ran.
+ *
+ * `rejects` is the replicator that has forgotten the feed. `returns` names the
+ * rows a pass reads, so it is also what ends a run of failures.
+ */
 function controllableQuery(rows = []) {
   const query = {
     rows,
     calls: 0,
+    failure: undefined,
     returns(next) {
       query.rows = next;
+      query.failure = undefined;
+    },
+    rejects(error) {
+      query.failure = error;
     },
     read: async () => {
       query.calls += 1;
+      if (query.failure !== undefined) {
+        throw query.failure;
+      }
       return query.rows;
     }
   };
@@ -425,6 +438,86 @@ test("lastSweep reflects the most recent sweep and is absent before the first", 
   assert.ok(second.at.getTime() >= first.at.getTime());
 
   handler.resolve();
+  await worker.stop();
+});
+
+test("sweepFailures rises while passes fail and resets on the next success", { timeout: DEADLINE_MS }, async t => {
+  const stream = controllableStream();
+  const query = controllableQuery([row("r1")]);
+  const handler = deferred();
+  const worker = workerOver(t, stream, query, recordingHandler(() => handler.promise));
+
+  await worker.start();
+  const succeeded = await nextSweep(worker);
+  assert.equal(worker.status().consumers[0].sweepFailures, 0);
+
+  query.rejects(new Error("feed_not_found"));
+  await until(
+    () => worker.status().consumers[0].sweepFailures >= 2,
+    "the failing passes were not counted"
+  );
+
+  // The two fields together are what distinguish a backstop that is succeeding
+  // from one that last succeeded a while ago: `lastSweep` still names the last
+  // pass that read the outstanding set, and it is not this one.
+  assert.equal(
+    worker.status().consumers[0].lastSweep.at.getTime(),
+    succeeded.at.getTime(),
+    "a failed pass moved lastSweep"
+  );
+
+  query.returns([row("r1")]);
+  await nextSweep(worker);
+  assert.equal(worker.status().consumers[0].sweepFailures, 0, "a successful pass did not reset the count");
+
+  handler.resolve();
+  await worker.stop();
+});
+
+test("the last sweep failure is reported beside lastSweep and is absent before the first", { timeout: DEADLINE_MS }, async t => {
+  const stream = controllableStream();
+  const query = controllableQuery([row("r1")]);
+  const handler = deferred();
+  const worker = workerOver(t, stream, query, recordingHandler(() => handler.promise));
+
+  assert.equal(worker.status().consumers[0].lastSweepFailure, undefined);
+  await worker.start();
+  await nextSweep(worker);
+  assert.equal(worker.status().consumers[0].lastSweepFailure, undefined, "a successful pass reported a failure");
+
+  const error = new Error("feed_not_found");
+  query.rejects(error);
+  await until(
+    () => worker.status().consumers[0].sweepFailures >= 1,
+    "the failing pass was not counted"
+  );
+
+  const status = worker.status().consumers[0];
+  assert.equal(status.lastSweepFailure.error, error);
+  assert.ok(status.lastSweepFailure.at instanceof Date);
+  // It carries its own time, so it reads without correlating against lastSweep.
+  assert.ok(status.lastSweepFailure.at.getTime() >= status.lastSweep.at.getTime());
+
+  handler.resolve();
+  await worker.stop();
+});
+
+test("a consumer whose every pass has failed reports the failure and no lastSweep", { timeout: DEADLINE_MS }, async t => {
+  const stream = controllableStream();
+  const query = controllableQuery([]);
+  query.rejects(new Error("feed_not_found"));
+  const worker = workerOver(t, stream, query, recordingHandler());
+
+  await worker.start();
+  await until(
+    () => worker.status().consumers[0].sweepFailures >= 1,
+    "the failing pass was not counted"
+  );
+
+  const status = worker.status().consumers[0];
+  assert.equal(status.lastSweep, undefined);
+  assert.ok(status.lastSweepFailure.at instanceof Date);
+
   await worker.stop();
 });
 
