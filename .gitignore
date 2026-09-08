@@ -141,3 +141,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Sources the specification guard generates and compiles
+test/spec-guard-workspace/
