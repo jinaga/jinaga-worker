@@ -25,10 +25,10 @@
     "LICENSE"
   ],
   "peerDependencies": {
-    "jinaga": "^6.12.0"
+    "jinaga": "^6.13.0"
   },
   "devDependencies": {
-    "jinaga": "^6.12.0",
+    "jinaga": "^6.13.0",
     "typescript": "^7.0.2"
   }
 }

@@ -60,15 +60,17 @@ that swallows it looks exactly like a worker with no work. The worker registers
 not self-heal as an error. A feed that begins delivering retires its report, so
 a decision raised again later is reported again.
 
-## Two known gaps in jinaga 6.12.0
+## An unbounded start waits as long as the replicator takes
 
-- `subscribeRows` does not apply the distribution-rule intersection that
-  `j.subscribe` does. A specification authorized only through an intersected
-  rule reports `reactive` and delivers nothing, so declare a distribution rule
-  matching the consumer's specification exactly.
-- `subscribeRows` awaits the feed's first response, so a replicator that
-  accepts the connection and never answers leaves `start()` pending
-  indefinitely. Do not await `start()` in a boot path unless the process is
-  supposed to fail when the replicator is unreachable. A service whose routes
-  read its own local mirror holds every one of them behind that wait,
-  `/health` included.
+`subscribeRows` awaits the feed's first response, so a replicator that
+accepts the connection and never answers leaves `start()` pending
+indefinitely. Do not await `start()` in a boot path unless the process is
+supposed to fail when the replicator is unreachable. A service whose routes
+read its own local mirror holds every one of them behind that wait,
+`/health` included.
+
+That wait is what a worker does when it is given no bound, and it is its own
+recovery: the same call is answered when the replicator returns, with nothing
+torn down and nothing rebuilt. A boot path that would rather wait a fixed
+while sets `startTimeoutMs`, which bounds the whole `start()` call and rejects
+with jinaga's `FeedTimeoutError`, releasing every stream and sweep timer.

@@ -153,8 +153,11 @@ export interface Consumer {
      */
     givenHash(j: Jinaga): string;
 
-    /** Open the row stream over the outstanding set. */
-    subscribe(j: Jinaga): Promise<RowStream<unknown>>;
+    /**
+     * Open the row stream over the outstanding set. `feedTimeoutMs` is what
+     * remains of the worker's start budget, and is absent when it set none.
+     */
+    subscribe(j: Jinaga, feedTimeoutMs?: number): Promise<RowStream<unknown>>;
 
     /**
      * Read the outstanding set for one backstop sweep. The rows carry the same
@@ -219,8 +222,11 @@ export function defineConsumer<
         sweepIntervalMs,
         handlerTimeoutMs: options.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS,
         givenHash: j => options.givens.map(given => j.hash(given as Fact)).join(","),
-        subscribe: async j => {
-            const args = [...options.givens, { capacity }] as [...T, RowStreamOptions];
+        subscribe: async (j, feedTimeoutMs) => {
+            const streamOptions: RowStreamOptions = feedTimeoutMs === undefined
+                ? { capacity }
+                : { capacity, feedTimeoutMs };
+            const args = [...options.givens, streamOptions] as [...T, RowStreamOptions];
             const stream = await j.subscribeRows(options.specification, ...args);
             return stream as RowStream<unknown>;
         },
