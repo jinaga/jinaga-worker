@@ -7,8 +7,8 @@ This is the implementation contract for the package proposed in
 third comment ("The contract as merged") rather than restating it, and records
 the decisions that were left open there.
 
-Requires `jinaga` ^6.12.0, the first release carrying the row-stream seam from
-[#250][250].
+Requires `jinaga` ^6.13.0, the release carrying both the row-stream seam from
+[#250][250] and the bounded subscribe from [#282][282].
 
 Every structure here is answerable to
 [the constitution](constitution/degrees-of-freedom-constitution.md). Section 10
@@ -17,6 +17,7 @@ records the evaluation and the compromises.
 [251]: https://github.com/jinaga/jinaga.js/issues/251
 [250]: https://github.com/jinaga/jinaga.js/issues/250
 [249]: https://github.com/jinaga/jinaga.js/issues/249
+[282]: https://github.com/jinaga/jinaga.js/pull/282
 
 ---
 
@@ -290,6 +291,7 @@ const attendees = defineConsumer({ name: "attendee-mirror", /* the next layer */
 const worker = createWorker(j, {
     consumers: [invitations, attendees],
     limiter: new Limiter(8),                   // below Pool({ max: 10 })
+    startTimeoutMs: 10_000,                    // this boot path waits no longer
     onNoProgress: e => {
         if (e.kind === "stalled") health.fail(`${e.consumer} stalled on ${e.rowHash}`);
         else logger.warn({ ...e, error: e.error }, "quarantined");
@@ -299,6 +301,11 @@ const worker = createWorker(j, {
 await worker.start();
 process.on("SIGTERM", async () => { await worker.stop(); await pool.end(); });
 ```
+
+This process serves a health endpoint, so its boot is bounded: `start()` settles
+within ten seconds either way, rather than holding the routes that answer
+without the replicator behind one that may never answer. §3.1 gives the two
+rejections and what each is worth doing about.
 
 ---
 
@@ -311,16 +318,35 @@ Per consumer, in order:
 1. Compute the given hash (`j.hash` of each given, joined) and **log it**. A
    given that differs by any field after a restart sends both discovery paths
    silently empty; this line is the only way an operator sees it.
-2. `await j.subscribeRows(specification, ...givens, { capacity })`. The library
-   installs listeners before it reads, delivers the current rows and every later
-   change through one iterator, and dedupes the startup window itself. There is
-   no second call to order correctly.
+2. `await j.subscribeRows(specification, ...givens, { capacity, feedTimeoutMs })`.
+   The library installs listeners before it reads, delivers the current rows and
+   every later change through one iterator, and dedupes the startup window
+   itself. There is no second call to order correctly.
 3. Begin iterating the stream, and schedule the backstop sweep.
 
-`start()` resolves when every consumer's stream is running. It rejects if any
-`subscribeRows` rejects, which is the correct behavior for a structural
-distribution denial: a worker not authorized for its own specification should
-fail to start rather than idle.
+`start()` resolves when every consumer's stream is running.
+
+`startTimeoutMs` bounds the whole call. The deadline is one instant computed
+when `start()` is entered, and each consumer's `feedTimeoutMs` is what remains
+of it when that consumer's turn comes, so the number a caller sets is the wall
+clock the boot path spends. With no bound set, no `feedTimeoutMs` is passed and
+each subscribe waits as long as the replicator takes.
+
+`start()` rejects two ways, and a caller is expected to branch on them.
+
+- **`DistributionDeniedError`** — the specification is not authorized. It is
+  structural: it will not self-heal, and a worker not authorized for its own
+  specification should fail to start rather than idle. Restarting repeats the
+  denial until somebody changes a distribution rule.
+- **`FeedTimeoutError`** — the replicator did not answer inside
+  `startTimeoutMs`, which usually resolves on its own. jinaga raises it and it
+  reaches the caller unwrapped. This package's `TimeoutError` means one thing, a
+  handler that outran `handlerTimeoutMs` (§3.4).
+
+A rejection leaves nothing running. Every stream is stopped and every sweep
+timer is cleared — the path a structural denial already takes — and the consumer
+whose subscribe expired was released by jinaga. The worker is spent: a caller
+who wants to retry builds a new one.
 
 ### 3.2 Discovery
 
@@ -607,14 +633,6 @@ its documentation must carry, because every one of them is silent when violated.
   should be logged, or a worker that is not yet authorized looks exactly like a
   worker with no work. Register `j.onDistributionDiagnostic` at startup and
   deduplicate per `(feed, code)`.
-- **Two known gaps in 6.12.0**, both marked in the source:
-  `subscribeRows` does not apply the distribution-rule intersection that
-  `j.subscribe` does (`observer/row-stream.js:176`), so a specification
-  authorized only through an intersected rule reports `reactive` and delivers
-  nothing — declare a rule matching the consumer specification exactly. And
-  `subscribeRows` awaits the feed's first response, so an unresponsive
-  replicator leaves `start()` pending; bound it with the orchestrator's startup
-  probe.
 
 ---
 
@@ -623,6 +641,7 @@ its documentation must carry, because every one of them is silent when violated.
 | Option | Home | Default | Why |
 | --- | --- | --- | --- |
 | `limiter` | worker | `new Limiter(8)` | One budget for the whole worker, sized just under the process's real connection pool. Adding a consumer must not raise total pressure. |
+| `startTimeoutMs` | worker | none | The wall clock a boot path spends before it starts serving. Absent, the subscribe stays pending and that same call is answered when the replicator returns: the waiting is the retry, and nothing is torn down or rebuilt. That recovery is what the shapes which do not await `start()` — the right shape for a service with routes of its own — run on. A cold start against a large candidate set can also legitimately take minutes. |
 | `shutdownTimeoutMs` | worker | 30_000 | Typically the orchestrator's grace period before SIGKILL. |
 | `retry.maxAttempts` | consumer | 5 | |
 | `retry.baseMs` | consumer | 1_000 | |
@@ -714,6 +733,14 @@ Settled after the RFC, in the order they were taken:
 7. **The RFC's vocabulary.** `consume`, `onNoProgress`, `failed` / `stalled`,
    so the code and three comments of design rationale use the same words. The
    verb survives as `defineConsumer`; the nouns are unchanged.
+8. **`startTimeoutMs` bounds `start()`, opt-in.** One worker-homed option for
+   how long a boot path will wait, absent by default so the shapes that do not
+   await `start()` keep the recovery an unbounded wait gives them (§6).
+   Consumers still start in order and each is given the budget that remains, so
+   the number is a total. Expiry rejects with jinaga's `FeedTimeoutError`,
+   releases every stream and sweep timer, and spends the worker. Spent is the
+   narrow choice: going from spent to re-startable only widens what is accepted,
+   so it stays reachable later without breaking anyone.
 
 ---
 
