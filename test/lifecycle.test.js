@@ -53,6 +53,26 @@ function openStream() {
   return stream;
 }
 
+/**
+ * A stream that offers a row to whatever iterates it, and reports a non-zero
+ * `dropped`. Both are how a test sees that a runtime took the stream: one
+ * dispatches, the other reaches `status()`.
+ */
+function offeringStream(rowHash) {
+  const stream = {
+    stopped: 0,
+    dropped: 3,
+    pending: 0,
+    stop: () => {
+      stream.stopped += 1;
+    },
+    [Symbol.asyncIterator]: async function* () {
+      yield { operation: "added", result: {}, rowHash };
+    }
+  };
+  return stream;
+}
+
 function recordingLogger() {
   const entries = [];
   const record = level => (message, data) => entries.push({ level, message, data });
@@ -207,6 +227,74 @@ test("start() rejects when subscribeRows rejects, and leaves no timers behind", 
 
   assert.equal(opened.length, 1);
   assert.equal(opened[0].stopped, 1);
+  assert.equal(timerCount(), before);
+});
+
+test("stop() during a pending subscribe releases the stream the replicator answers with", async () => {
+  const before = timerCount();
+  const answer = deferred();
+  const stream = offeringStream("row-1");
+  let handled = 0;
+  const worker = new WorkerHost(fakeJinaga({ invitations: () => answer.promise }), {
+    consumers: [consumerOf("invitations", async row => {
+      handled += 1;
+      return new Mirrored(row.rowHash);
+    })],
+    logger: recordingLogger()
+  });
+
+  // The boot path a service lands on: `start()` is not awaited, so SIGTERM can
+  // arrive while the subscribe is still outstanding.
+  const starting = worker.start();
+  const report = await worker.stop();
+  answer.resolve(stream);
+  await starting;
+  await nextTurn();
+  await nextTurn();
+
+  assert.equal(stream.stopped, 1, "the stream handed to a stopped consumer was not released");
+  assert.equal(worker.runtimes[0].discovering, false);
+  assert.deepEqual(report, { drained: 0, abandoned: 0 });
+
+  const status = worker.status().consumers[0];
+  // `dropped` is read through the stream the runtime holds, so the fake's
+  // non-zero count is what a stream assigned after `stop()` would surface.
+  assert.equal(status.dropped, 0, "a stream was assigned to a stopped consumer");
+  assert.equal(status.dispatching, 0);
+  assert.equal(handled, 0, "a stopped consumer dispatched a row");
+  assert.equal(timerCount(), before, "a sweep timer was scheduled after stop()");
+});
+
+test("a consumer that subscribed before stop() drains while a pending one is released", async () => {
+  const before = timerCount();
+  const answer = deferred();
+  const handler = deferred();
+  const pending = offeringStream("row-2");
+  const worker = new WorkerHost(fakeJinaga({ attendees: () => answer.promise }), {
+    consumers: [
+      consumerOf("invitations", () => handler.promise),
+      consumerOf("attendees", completing)
+    ],
+    logger: recordingLogger()
+  });
+
+  // The first consumer has its stream; the second is still waiting for one.
+  const starting = worker.start();
+  await nextTurn();
+  const running = worker.runtimes[0].attempt("row-1", { result: {}, rowHash: "row-1" });
+
+  const stopping = worker.stop();
+  handler.resolve(new Mirrored("row-1"));
+  await running;
+  const report = await stopping;
+  answer.resolve(pending);
+  await starting;
+  await nextTurn();
+
+  assert.deepEqual(report, { drained: 1, abandoned: 0 });
+  assert.equal(worker.status().consumers[0].completed, 1);
+  assert.equal(pending.stopped, 1);
+  assert.equal(worker.runtimes[1].discovering, false);
   assert.equal(timerCount(), before);
 });
 

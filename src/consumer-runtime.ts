@@ -43,6 +43,17 @@ export class ConsumerRuntime {
     private lastSweepFailure: { at: Date; error: unknown } | undefined;
     private sweepFailures = 0;
 
+    /**
+     * Where this consumer is in the arc of discovery. Three situations, one
+     * field: it has not subscribed yet, its stream is running, or discovery has
+     * ended for good. The interval between the subscribe and its answer is
+     * `idle`, which is why it is not a boolean.
+     *
+     * `ended` is terminal. `stop()` is terminal for a worker, so nothing moves
+     * this back.
+     */
+    private discovery: "idle" | "running" | "ended" = "idle";
+
     constructor(
         private readonly j: Jinaga,
         private readonly consumer: Consumer,
@@ -58,12 +69,9 @@ export class ConsumerRuntime {
         return this.consumer.name;
     }
 
-    /**
-     * Whether discovery is still running. The sweep timer is the one record of
-     * it, so nothing else has to be kept consistent with it.
-     */
-    private get discovering(): boolean {
-        return this.sweepTimer !== undefined;
+    /** Whether this consumer's stream is running. */
+    get discovering(): boolean {
+        return this.discovery === "running";
     }
 
     /**
@@ -77,7 +85,12 @@ export class ConsumerRuntime {
      * leaves nothing behind.
      *
      * `feedTimeoutMs` is what remains of the worker's start budget when this
-     * consumer's turn comes, and is absent when the worker set no bound.
+     * consumer's turn comes, and is absent when the worker set no bound. An
+     * unbounded subscribe is outstanding across an await the caller may never
+     * see the end of, and jinaga offers no way to cancel one, so the answer may
+     * arrive on a worker that has since been stopped. The record is read once
+     * it returns: a stream handed to a stopped consumer is released where it
+     * arrives, and nothing is assigned and no timer is scheduled behind it.
      */
     async start(feedTimeoutMs?: number): Promise<void> {
         this.logger.info(
@@ -85,7 +98,12 @@ export class ConsumerRuntime {
             { consumer: this.consumer.name, givenHash: this.givenHash }
         );
         const stream = await this.consumer.subscribe(this.j, feedTimeoutMs);
+        if (this.discovery === "ended") {
+            stream.stop();
+            return;
+        }
         this.stream = stream;
+        this.discovery = "running";
         // The loop runs for the life of the stream and ends when `stop()`
         // releases it. It reports its own failure, so there is nothing to await.
         void this.iterate(stream);
@@ -188,6 +206,7 @@ export class ConsumerRuntime {
      * count through rather than keeping a copy of it.
      */
     endDiscovery(): void {
+        this.discovery = "ended";
         this.stream?.stop();
         if (this.sweepTimer !== undefined) {
             clearInterval(this.sweepTimer);
