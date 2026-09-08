@@ -4,7 +4,7 @@ This file is loaded into every conversation. It captures project-wide rules that
 
 For what the package is and the contract it implements, read `design/durable-consumer-spec.md`. Every structure in that spec is answerable to `design/constitution/degrees-of-freedom-constitution.md`.
 
-Issues labelled `ready` are queued for automated work. `.claude/skills/night-shift/SKILL.md` documents that protocol: how to tell whether an issue is already claimed or already landed, how the dependency chain between the implementation slices decides ordering, when to stop and ask a question instead of guessing, how stacked pull requests are opened and registered, and how each run is recorded so the reasoning survives the container.
+Issues labelled `ready` are queued for automated work. `.claude/skills/night-shift-worker/SKILL.md` documents that protocol, and `.night-shift/config.md` carries everything specific to this repository: how to tell whether an issue is already claimed or already landed, how the dependency chain between the implementation slices decides ordering, when to stop and ask a question instead of guessing, how stacked pull requests are opened and registered, and how each run is recorded so the reasoning survives the container.
 
 ## Build and test
 
