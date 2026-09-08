@@ -51,11 +51,12 @@ export interface Worker {
     /**
      * Subscribe, sweep, and begin dispatching.
      *
-     * It resolves when every consumer's stream is running, and rejects on a
-     * structural distribution denial, which will not self-heal. There is a
-     * third outcome: `subscribeRows` awaits the feed's first response, so a
-     * replicator that accepts the connection and never answers leaves
-     * `start()` pending indefinitely.
+     * It resolves when every consumer's stream is running, and rejects if any
+     * consumer fails to start, carrying that consumer's error. The rejection
+     * to plan for is a structural distribution denial, which will not
+     * self-heal. There is a third outcome: `subscribeRows` awaits the feed's
+     * first response, so a replicator that accepts the connection and never
+     * answers leaves `start()` pending indefinitely.
      *
      * Do not await `start()` in a boot path unless the process is supposed to
      * fail when the replicator is unreachable. A service whose routes read its
@@ -101,8 +102,8 @@ export class WorkerHost implements Worker {
      * The diagnostics channel is registered before the first subscribe, so a
      * feed the replicator reports as `reactive` is logged rather than lost. A
      * `reactive` decision is the subscription race and self-heals once the
-     * authorizing fact arrives; the structural denial that will not self-heal
-     * is what rejects here.
+     * authorizing fact arrives; of the two, the structural denial that will
+     * not self-heal is the one that reaches this method as a rejection.
      *
      * @see Worker.start for the three outcomes, and what a boot path owes them.
      */

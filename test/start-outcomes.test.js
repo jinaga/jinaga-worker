@@ -26,9 +26,10 @@ function flatten(content) {
 }
 
 // The comment a caller reads is the one on the `Worker` interface, which is
-// what `createWorker` returns. Scope the read to that member rather than to the
-// file, so a sentence that drifted onto some other declaration does not answer
-// for it.
+// what `createWorker` returns. Take the block that immediately precedes
+// `start()`, rather than everything above it: a member added later would bring
+// its own comment into the read, and then a sentence on that member would
+// answer for one deleted from `start()`.
 function workerStartComment() {
   const declarations = fs.readFileSync(path.join(repoRoot, "dist", "worker.d.ts"), "utf8");
 
@@ -36,10 +37,22 @@ function workerStartComment() {
   assert.ok(afterInterface !== undefined, "dist/worker.d.ts declares no Worker interface");
 
   const body = afterInterface.split(/^\}/m)[0];
-  const comment = body.split(/start\(\): Promise<void>;/)[0];
-  assert.notEqual(comment, body, "the Worker interface declares no start()");
+  const above = body.split(/start\(\): Promise<void>;/)[0];
+  assert.notEqual(above, body, "the Worker interface declares no start()");
 
-  return flatten(comment);
+  // Adjacency is what makes the last block `start()`'s own. Without this, a
+  // member declared above it carries a comment that answers in its place, and
+  // deleting `start()`'s own comment leaves the read still passing.
+  assert.match(
+    above.trimEnd(),
+    /\*\/$/,
+    "the declaration above Worker.start() is not a doc comment, so start() has none of its own"
+  );
+
+  const blocks = above.match(/\/\*\*[\s\S]*?\*\//g) ?? [];
+  assert.ok(blocks.length > 0, "Worker.start() carries no doc comment");
+
+  return flatten(blocks[blocks.length - 1]);
 }
 
 test("Worker.start()'s declaration names the pending outcome and what a boot path owes it", () => {
