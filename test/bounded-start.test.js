@@ -245,6 +245,25 @@ test("a structural denial rejects with the denial, bound or not", async () => {
   }
 });
 
+test("a bound that is not a length of time is refused where the worker is built", () => {
+  for (const startTimeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1]) {
+    assert.throws(
+      () => createWorker(replicator(), {
+        consumers: [consumerOf("invitations")],
+        startTimeoutMs
+      }),
+      error => {
+        assert.match(error.message, /startTimeoutMs/);
+        // Refused before anything is built, so it never reaches the deadline
+        // and is never mistaken for a budget that ran out.
+        assert.ok(!(error instanceof FeedTimeoutError));
+        return true;
+      },
+      `startTimeoutMs ${startTimeoutMs} was accepted`
+    );
+  }
+});
+
 test("start() after an aborted start does not subscribe again", async () => {
   const j = replicator({ invitations: silent });
   const worker = createWorker(j, {

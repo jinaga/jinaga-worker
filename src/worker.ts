@@ -127,7 +127,7 @@ export class WorkerHost implements Worker {
         const logger = options.logger ?? consoleLogger;
         const limiter = options.limiter ?? new Limiter(DEFAULT_CONCURRENCY);
         this.logger = logger;
-        this.startTimeoutMs = options.startTimeoutMs;
+        this.startTimeoutMs = requireDuration(options.startTimeoutMs);
         this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
         this.runtimes = options.consumers.map(
             consumer => new ConsumerRuntime(j, consumer, limiter, logger, options.onNoProgress)
@@ -209,6 +209,28 @@ export class WorkerHost implements Worker {
  */
 export function createWorker(j: Jinaga, options: WorkerOptions): Worker {
     return new WorkerHost(j, options);
+}
+
+/**
+ * Hold `startTimeoutMs` to a positive, finite number of milliseconds.
+ *
+ * `number` admits `NaN`, an infinity and a negative, and none of those is a
+ * length of time. A worker refuses one where it is built, which is where its
+ * options have their one home, so every value that reaches the deadline is a
+ * duration and `FeedTimeoutError` keeps its meaning: a bound that expired.
+ */
+function requireDuration(startTimeoutMs: number | undefined): number | undefined {
+    if (startTimeoutMs === undefined) {
+        return undefined;
+    }
+    if (!Number.isFinite(startTimeoutMs) || startTimeoutMs <= 0) {
+        throw new Error(
+            `startTimeoutMs is ${startTimeoutMs}, which is not a length of time. Give ` +
+            `it a positive number of milliseconds, or leave it out to let start() wait ` +
+            `as long as the replicator takes.`
+        );
+    }
+    return startTimeoutMs;
 }
 
 /**
