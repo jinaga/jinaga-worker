@@ -158,17 +158,25 @@ function specSections(content) {
     return lines.slice(start, end);
 }
 
+/** How the specification names the section a block sits in. */
+const SPEC_HEADING = /^#{2,3}\s+(\d+(?:\.\d+)*)\.?\s/;
+
 /**
- * Every `ts` block in §2 and §3, keyed by the section it sits in and its place
- * within that section.
+ * The `ts` blocks in a run of Markdown lines, keyed by the section they sit in
+ * and their place within that section.
+ *
+ * `heading` matches the lines that open a section and captures its name. A
+ * document that names no sections passes none and gives `section` a name of its
+ * own instead, so every block on the page is keyed by that one name. `origin`
+ * says where the blocks came from, and travels with each of them into the
+ * generated source.
  */
-function readSpecBlocks(content = fs.readFileSync(specPath, "utf8")) {
+function readTsBlocks(lines, { origin, heading = null, section = null }) {
     const blocks = [];
     const seen = new Map();
-    let section = null;
     let open = null;
 
-    for (const line of specSections(content)) {
+    for (const line of lines) {
         // A fence carries whatever indentation its surroundings give it — a
         // block inside a list item is indented — and a reader anchored at
         // column one would not see such a block at all, which is the silent
@@ -187,6 +195,7 @@ function readSpecBlocks(content = fs.readFileSync(specPath, "utf8")) {
                     blocks.push({
                         key: `${section}#${ordinal}`,
                         section,
+                        origin,
                         body: open.body
                             .map(text => text.startsWith(open.indent)
                                 ? text.slice(open.indent.length)
@@ -202,16 +211,26 @@ function readSpecBlocks(content = fs.readFileSync(specPath, "utf8")) {
             open.body.push(line);
             continue;
         }
-        const heading = /^#{2,3}\s+(\d+(?:\.\d+)*)\.?\s/.exec(line);
         if (heading !== null) {
-            section = heading[1];
+            const opened = heading.exec(line);
+            if (opened !== null) {
+                section = opened[1];
+            }
         }
     }
 
     if (open !== null) {
-        throw new Error("a fenced block in §2 or §3 is never closed");
+        throw new Error(`a fenced block in ${origin} is never closed`);
     }
     return blocks;
+}
+
+/** Every `ts` block in §2 and §3 of the specification. */
+function readSpecBlocks(content = fs.readFileSync(specPath, "utf8")) {
+    return readTsBlocks(specSections(content), {
+        origin: "design/durable-consumer-spec.md",
+        heading: SPEC_HEADING
+    });
 }
 
 function isIllustration(block) {
@@ -279,14 +298,14 @@ function normalize(body, ambient) {
 function guardSource(block, distSpecifier, entry = block.entry ?? BLOCKS[block.key]) {
     if (entry === undefined) {
         throw new Error(
-            `§${block.section} carries a ts block the guard has no preamble for: register ` +
+            `${block.origin} carries a ts block the guard has no preamble for: register ` +
             `${block.key} in test/spec-guard.js, or open the block with an "// Illustration:" line`
         );
     }
     const checks = Object.entries(entry.compares).flatMap(([name, expressions]) =>
         expressions.map((expression, index) => `type __check_${name}_${index} = ${expression};`));
     return [
-        `// Generated from §${block.section} of design/durable-consumer-spec.md.`,
+        `// Generated from ${block.key} of ${block.origin}.`,
         entry.preamble.split(DIST).join(distSpecifier),
         normalize(block.body, entry.ambient === true),
         EQUALITY,
@@ -350,6 +369,7 @@ function runGuard(blocks, { directory, dist }) {
 
 module.exports = {
     BLOCKS,
+    DIST,
     ILLUSTRATION,
     compileGuard,
     declaredNames,
@@ -359,6 +379,7 @@ module.exports = {
     isIllustration,
     normalize,
     readSpecBlocks,
+    readTsBlocks,
     repoRoot,
     runGuard,
     specPath,
