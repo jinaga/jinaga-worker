@@ -44,30 +44,41 @@ If the process serves anything that reads its own local mirror — an API,
 it, and set no bound.
 
 ```ts
+type Startup =
+    | { state: "starting" }
+    | { state: "running" }
+    | { state: "failed"; error: unknown };
+
 const worker = createWorker(j, { consumers });
 
-let started = false;
-const starting = worker.start().then(
-    () => { started = true; },
-    error => { logger.error({ error }, "the worker did not start"); }
+let startup: Startup = { state: "starting" };
+worker.start().then(
+    () => { startup = { state: "running" }; },
+    error => {
+        startup = { state: "failed", error };
+        logger.error("the worker did not start", { error });
+    }
 );
 
 // Answer these from the routes you already serve, and listen before either.
 const live = () => true;
-const ready = () => started;
+const ready = () => startup.state === "running";
 
-process.on("SIGTERM", async () => {
-    await starting;
-    await worker.stop();
-});
+process.on("SIGTERM", async () => { await worker.stop(); });
 ```
 
 The process is alive and serving from its first request. Readiness stays false
 until every consumer's stream is running, so a load balancer sends it nothing in
 the meantime and an operator can see which half is down.
 
-The handle is kept rather than discarded. It gives the rejection a home, and
-shutdown waits on the start instead of racing it.
+The handle is kept rather than discarded: readiness is gated on it, and it gives
+the rejection a home. `startup` holds which rejection arrived, which is what
+turns a 503 into something an operator can act on.
+
+Nothing awaits it. In this shape the call may never settle, so a shutdown path
+that waited on it would never run. `stop()` needs no help from it — it ends
+discovery on its own, and a subscribe still outstanding is released where it
+arrives, on a consumer that has since been stopped.
 
 No bound is set, because for this shape the unbounded wait is the recovery. A
 replicator that comes back an hour later answers the same call, and nothing is
@@ -89,10 +100,10 @@ async function main(): Promise<void> {
     }
     catch (error) {
         logger.error(
-            { error },
             error instanceof DistributionDeniedError
                 ? "not authorized for its own specification: a restart repeats this"
-                : "the replicator did not answer inside startTimeoutMs"
+                : "the replicator did not answer inside startTimeoutMs",
+            { error }
         );
         process.exit(1);
     }
@@ -132,7 +143,7 @@ async function startWithRetry(build: () => Worker): Promise<Worker> {
             if (error instanceof DistributionDeniedError) {
                 throw error;
             }
-            logger.warn({ error }, "the replicator did not answer; building another worker");
+            logger.warn("the replicator did not answer; building another worker", { error });
             await delay(5_000);
         }
     }

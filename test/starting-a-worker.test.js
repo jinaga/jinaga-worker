@@ -19,16 +19,20 @@ const page = fs.readFileSync(path.join(repoRoot, PAGE), "utf8");
  * consumers around it. Those surroundings belong to the reader's application,
  * so they are declared here and the blocks show only the code the reader
  * writes.
+ *
+ * Every name the package ships is imported rather than described. A hand-written
+ * stand-in would compile the page against a shape the library does not have, and
+ * a block that typechecks against an invented `Logger` is worse than one that
+ * does not compile at all: it teaches an argument order that fails in the
+ * reader's editor. Only `process` and `delay`, which the package does not ship,
+ * are declared here, and each is the shape its own source gives it.
  */
 const PREAMBLE =
   `import { DistributionDeniedError, Jinaga } from "jinaga";\n` +
-  `import { Consumer, createWorker, Worker } from "${DIST}";\n` +
+  `import { Consumer, createWorker, Logger, Worker } from "${DIST}";\n` +
   `declare const j: Jinaga;\n` +
   `declare const consumers: readonly Consumer[];\n` +
-  `declare const logger: {\n` +
-  `    error(fields: object, message: string): void;\n` +
-  `    warn(fields: object, message: string): void;\n` +
-  `};\n` +
+  `declare const logger: Logger;\n` +
   `declare const process: {\n` +
   `    exit(code: number): never;\n` +
   `    on(signal: string, handler: () => void | Promise<void>): void;\n` +
