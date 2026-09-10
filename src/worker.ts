@@ -41,6 +41,7 @@ export interface WorkerOptions {
      * rebuilt, which is what the shapes that do not await `start()` run on.
      *
      * https://github.com/jinaga/jinaga-worker/blob/main/design/durable-consumer-spec.md#31-start
+     * https://github.com/jinaga/jinaga-worker/blob/main/docs/starting-a-worker.md
      */
     startTimeoutMs?: number;
 
@@ -95,7 +96,9 @@ export interface Worker {
      * leaves nothing running and spends the worker: a caller who wants to
      * retry builds a new one.
      *
-     * See `docs/inherited-constraints.md`.
+     * See `docs/inherited-constraints.md`. Which shape of boot path to write
+     * around this call, and what each one costs:
+     * https://github.com/jinaga/jinaga-worker/blob/main/docs/starting-a-worker.md
      */
     start(): Promise<void>;
     /** Stop discovery, drain in-flight work to a deadline, release feeds. */

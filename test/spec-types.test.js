@@ -106,6 +106,7 @@ test("a ts block the extraction cannot compile fails the guard", () => {
   const broken = {
     key: "3.3#2",
     section: "3.3",
+    origin: "design/durable-consumer-spec.md",
     body: "export interface Invented { row: NoSuchType; }",
     entry: {
       preamble: "export {};\n",

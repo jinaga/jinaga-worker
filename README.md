@@ -25,6 +25,8 @@ a fixed set of them.
   condition, the group, and what declining the pattern costs
 - [Constraints inherited from jinaga](docs/inherited-constraints.md): platform
   properties that are silent when violated
+- [Starting a worker](docs/starting-a-worker.md): which shape of boot path to
+  write around `start()`, and what each one costs
 
 ## Contributing
 

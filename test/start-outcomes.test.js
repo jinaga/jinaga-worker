@@ -2,8 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-
-const repoRoot = path.join(__dirname, "..");
+const { repoRoot, flatten, commentAbove } = require("./declaration-comments");
 
 // The third outcome, and the consequence a caller acts on. A site that states
 // the outcome without the consequence tells a caller what is true and not what
@@ -16,47 +15,10 @@ const CONSEQUENCE =
   "Do not await `start()` in a boot path unless the process is supposed to " +
   "fail when the replicator is unreachable.";
 
-// Both sites wrap their prose, one behind comment markers and one behind list
-// markers, so compare on a single line with those markers removed.
-function flatten(content) {
-  return content
-    .replace(/^\s*(?:\/\*\*|\*\/|\*|-)\s?/gm, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 // The comment a caller reads is the one on the `Worker` interface, which is
-// what `createWorker` returns. Take the block that immediately precedes
-// `start()`, rather than everything above it: a member added later would bring
-// its own comment into the read, and then a sentence on that member would
-// answer for one deleted from `start()`.
-function workerStartComment() {
-  const declarations = fs.readFileSync(path.join(repoRoot, "dist", "worker.d.ts"), "utf8");
-
-  const afterInterface = declarations.split(/\binterface Worker \{/)[1];
-  assert.ok(afterInterface !== undefined, "dist/worker.d.ts declares no Worker interface");
-
-  const body = afterInterface.split(/^\}/m)[0];
-  const above = body.split(/start\(\): Promise<void>;/)[0];
-  assert.notEqual(above, body, "the Worker interface declares no start()");
-
-  // Adjacency is what makes the last block `start()`'s own. Without this, a
-  // member declared above it carries a comment that answers in its place, and
-  // deleting `start()`'s own comment leaves the read still passing.
-  assert.match(
-    above.trimEnd(),
-    /\*\/$/,
-    "the declaration above Worker.start() is not a doc comment, so start() has none of its own"
-  );
-
-  const blocks = above.match(/\/\*\*[\s\S]*?\*\//g) ?? [];
-  assert.ok(blocks.length > 0, "Worker.start() carries no doc comment");
-
-  return flatten(blocks[blocks.length - 1]);
-}
-
+// what `createWorker` returns.
 test("Worker.start()'s declaration names the pending outcome and what a boot path owes it", () => {
-  const comment = workerStartComment();
+  const comment = commentAbove("worker.d.ts", "Worker", "start(): Promise<void>;");
 
   assert.ok(
     comment.includes(OUTCOME),
