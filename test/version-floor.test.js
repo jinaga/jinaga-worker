@@ -23,18 +23,48 @@ const manifestPath = path.join(repoRoot, "package.json");
 const REQUIRES = /^Requires `jinaga` ([^,\s]+)/m;
 
 /**
- * The version the specification names. A preamble the pattern cannot find is a
- * failure rather than an absent expectation, because a comparison against
- * nothing is a comparison that passes.
+ * Where the preamble ends. The numbered sections begin at the first `##`
+ * heading, so everything above it is what a reader meets before §1. The `---`
+ * rule that sits just above that heading divides four later sections too, and a
+ * boundary that lands on the first of five is a boundary that can move.
+ */
+const FIRST_SECTION = /^## /m;
+
+/**
+ * The version the preamble names.
+ *
+ * The claim under test is what the preamble states, so the preamble is what is
+ * read: a sentence found anywhere in the document would let the stated floor
+ * drift while some other line held the comparison up. Both the missing case and
+ * the repeated one fail here rather than yielding an expectation that no longer
+ * means what it says, because a comparison against nothing is a comparison that
+ * passes.
  */
 function statedVersion() {
   const content = fs.readFileSync(specPath, "utf8");
-  const stated = REQUIRES.exec(content);
+  const firstSection = FIRST_SECTION.exec(content);
+
+  assert.ok(
+    firstSection !== null,
+    "design/durable-consumer-spec.md no longer has a `##` section to close its preamble"
+  );
+
+  const stated = REQUIRES.exec(content.slice(0, firstSection.index));
 
   assert.ok(
     stated !== null,
-    "design/durable-consumer-spec.md no longer opens with a `Requires \\`jinaga\\` <version>` line"
+    "the preamble of design/durable-consumer-spec.md no longer carries a `Requires \\`jinaga\\` <version>` line"
   );
+
+  // One sentence states the floor. A second, anywhere on the page, is a claim
+  // the preamble does not govern and this comparison would not read.
+  const everywhere = content.match(new RegExp(REQUIRES.source, "gm")) ?? [];
+  assert.equal(
+    everywhere.length,
+    1,
+    "design/durable-consumer-spec.md states the required jinaga version in more than one place"
+  );
+
   return stated[1];
 }
 
