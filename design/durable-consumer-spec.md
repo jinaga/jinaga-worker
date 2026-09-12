@@ -7,8 +7,9 @@ This is the implementation contract for the package proposed in
 third comment ("The contract as merged") rather than restating it, and records
 the decisions that were left open there.
 
-Requires `jinaga` ^6.13.0, the release carrying both the row-stream seam from
-[#250][250] and the bounded subscribe from [#282][282].
+Requires the `jinaga` release that `package.json` declares as this package's
+peer dependency, which carries both the row-stream seam from [#250][250] and the
+bounded subscribe from [#282][282].
 
 Every structure here is answerable to
 [the constitution](constitution/degrees-of-freedom-constitution.md). Section 10
