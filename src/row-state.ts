@@ -4,7 +4,8 @@ import { SpecificationRow } from "jinaga";
  * What a consumer knows about one outstanding row.
  *
  * Four phases for the four situations a row can be in. `completed` means the
- * completion fact is in the store, which is where an attempt ends. `attempts`
+ * completion fact is in the store, which is where an attempt ends, and
+ * `completionHash` names the fact this process stored to get there. `attempts`
  * and `firstAttemptAt` appear on the phases where they govern something: the
  * attempt limit, and the elapsed time a non-progress report carries. A row
  * reaches exhaustion from `dispatching` and from `completed` alike, so both
@@ -14,7 +15,7 @@ import { SpecificationRow } from "jinaga";
 export type RowState<U> =
     | { phase: "dispatching"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "waiting"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; retryAt: number }
-    | { phase: "completed"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
+    | { phase: "completed"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; completionHash: string }
     | { phase: "quarantined"; row: SpecificationRow<U> };
 
 /**
@@ -35,7 +36,8 @@ export type RowStateMap<U> = Map<string, RowState<U>>;
  * change from the stream, and a sweep that omits the row.
  *
  * `resolved` is the completion fact reaching the store, not the handler
- * returning it: the attempt spans both.
+ * returning it: the attempt spans both. It carries that fact's hash, which the
+ * caller reads off the write.
  *
  * `rejected` covers every way an attempt fails: a handler that rejects, a
  * completion fact the store refuses, and an attempt that exceeds its timeout.
@@ -46,7 +48,7 @@ export type RowEvent<U> =
     | { kind: "added"; row: SpecificationRow<U>; at: number }
     | { kind: "swept"; row: SpecificationRow<U>; at: number; maxAttempts: number }
     | { kind: "removed" }
-    | { kind: "resolved" }
+    | { kind: "resolved"; completionHash: string }
     | { kind: "rejected"; retryAt: number; maxAttempts: number }
     | { kind: "retryDue" };
 
@@ -95,7 +97,8 @@ export function transition<U>(
                     phase: "completed",
                     row: current.row,
                     attempts: current.attempts,
-                    firstAttemptAt: current.firstAttemptAt
+                    firstAttemptAt: current.firstAttemptAt,
+                    completionHash: event.completionHash
                 };
             }
             if (event.kind === "rejected") {

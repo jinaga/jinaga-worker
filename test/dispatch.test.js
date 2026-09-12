@@ -569,13 +569,15 @@ test("dispatching a row that has already left the set is harmless", { timeout: D
   assert.deepEqual(handle.handled, ["r1", "r1"], "the second attempt did not run the handler");
 
   // The first attempt is no longer the one the map is about, so its outcome
-  // leaves the row to the attempt that replaced it.
-  attempts[0].resolve();
+  // leaves the row to the attempt that replaced it. Each attempt resolves with
+  // the completion fact its handler owes, which is what the library asserts and
+  // reads the row's `completionHash` off.
+  attempts[0].resolve(new Mirrored("r1"));
   await quiesce();
   assert.equal(phaseOf(rowsOf("items"), "r1"), "dispatching", "a superseded attempt moved the row");
   assert.equal(worker.status().consumers[0].completed, 0);
 
-  attempts[1].resolve();
+  attempts[1].resolve(new Mirrored("r1"));
   await quiesce();
 
   assert.equal(rowsOf("items").size, 1, "the two attempts left more than one entry");
@@ -626,7 +628,7 @@ test("a superseded attempt neither retries nor drains in place of the one that r
 
   // The drain awaits the attempt that is running, not the one it replaced.
   const stopping = worker.stop();
-  attempts[1].resolve();
+  attempts[1].resolve(new Mirrored("r1"));
 
   assert.deepEqual(await stopping, { drained: 1, abandoned: 0 });
 });

@@ -29,12 +29,16 @@ const waiting = (attempts, retryAt, firstAttemptAt = 100) => ({
   retryAt
 });
 
-const completed = (attempts, firstAttemptAt = 100) => ({
+const completed = (attempts, firstAttemptAt = 100, completionHash = "c1") => ({
   phase: "completed",
   row: row("r"),
   attempts,
-  firstAttemptAt
+  firstAttemptAt,
+  completionHash
 });
+
+// The hash the caller read off the write it just performed.
+const resolved = (completionHash = "c1") => ({ kind: "resolved", completionHash });
 
 const quarantined = () => ({ phase: "quarantined", row: row("r") });
 
@@ -56,8 +60,14 @@ const table = [
   {
     name: "dispatching, handler resolves, completed",
     from: dispatching(2),
-    event: { kind: "resolved" },
-    to: { phase: "completed", row: row("r"), attempts: 2, firstAttemptAt: 100 }
+    event: resolved("c1"),
+    to: {
+      phase: "completed",
+      row: row("r"),
+      attempts: 2,
+      firstAttemptAt: 100,
+      completionHash: "c1"
+    }
   },
   {
     name: "dispatching, handler rejects below the attempt limit, waiting",
@@ -156,6 +166,21 @@ test("transition: completed suppresses a stream addition, since the sweep decide
   assert.deepEqual(transition(state, event), state);
 });
 
+test("a row re-dispatched by a sweep carries the completion hash of its latest attempt", () => {
+  const rows = new Map();
+  applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
+  applyRowEvent(rows, "r", resolved("first"));
+  applyRowEvent(rows, "r", { kind: "swept", row: row("r"), at: 500, maxAttempts: MAX });
+
+  // `dispatching` carries no hash, so the fact of an earlier attempt cannot
+  // survive into the report for a later one.
+  assert.equal("completionHash" in rows.get("r"), false);
+
+  applyRowEvent(rows, "r", resolved("second"));
+
+  assert.equal(rows.get("r").completionHash, "second");
+});
+
 test("the map holds no entry for a row that was never discovered", () => {
   const rows = new Map();
 
@@ -183,7 +208,7 @@ test("a row is admissible if and only if the map holds no entry for it", () => {
 test("a row that leaves the set by the removed change is absent from the map", () => {
   const rows = new Map();
   applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
-  applyRowEvent(rows, "r", { kind: "resolved" });
+  applyRowEvent(rows, "r", resolved());
   applyRowEvent(rows, "r", { kind: "removed" });
 
   assert.equal(rows.has("r"), false);
@@ -225,7 +250,7 @@ test("a quarantined row leaves the map when it leaves the outstanding set", () =
 test("a stale added following a removed for the same row admits it once", () => {
   const rows = new Map();
   applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
-  applyRowEvent(rows, "r", { kind: "resolved" });
+  applyRowEvent(rows, "r", resolved());
 
   // One save carries the row's source fact and its completion fact, and
   // notifications are unordered, so the removed can arrive before the added.
@@ -270,14 +295,14 @@ test("counts agree with the map after every transition", () => {
     ["a", { kind: "added", row: row("a"), at: 100 }],
     ["b", { kind: "added", row: row("b"), at: 100 }],
     ["c", { kind: "swept", row: row("c"), at: 100, maxAttempts: MAX }],
-    ["a", { kind: "resolved" }],
+    ["a", resolved()],
     ["b", { kind: "rejected", retryAt: 900, maxAttempts: MAX }],
     ["c", { kind: "rejected", retryAt: 900, maxAttempts: 1 }],
     ["b", { kind: "retryDue" }],
     ["a", { kind: "swept", row: row("a"), at: 500, maxAttempts: MAX }],
-    ["b", { kind: "resolved" }],
+    ["b", resolved()],
     ["b", { kind: "swept", row: row("b"), at: 600, maxAttempts: 2 }],
-    ["a", { kind: "resolved" }],
+    ["a", resolved()],
     ["c", { kind: "removed" }],
     ["a", { kind: "removed" }],
     ["b", { kind: "removed" }]

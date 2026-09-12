@@ -1,10 +1,22 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 
 const { defineConsumer } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
 const { distributionDiagnostics } = require("../dist/diagnostics.js");
 const { retiringOn } = require("./outstanding-specification.js");
+const { specPath } = require("./spec-guard.js");
+
+/**
+ * What the fake replicator answers for a fact's hash.
+ *
+ * Facts are content-addressed, so this hashes a fact's own fields: two writes
+ * of one fact carry one hash, and a handler that returns a different fact gets
+ * a different one. That is what lets a test tell the completion fact of one
+ * attempt from that of another.
+ */
+const hashOf = fact => `hash-of-${JSON.stringify(fact)}`;
 
 // A given is a fact, and non-progress asks nothing of one but its hash.
 const tenant = id => ({ type: "Test.Tenant", id });
@@ -121,7 +133,7 @@ function factStore(respond = async prototype => prototype) {
 
 function fakeJinaga(stream, query, store = factStore()) {
   return {
-    hash: fact => `hash-of-${fact.id}`,
+    hash: hashOf,
     onDistributionDiagnostic: () => {},
     subscribeRows: async () => stream,
     queryRows: query.read,
@@ -440,6 +452,164 @@ test("reports failed, with the last rejection, when the handler throws to exhaus
   assert.equal(event.quarantineDepth, 1);
 
   await worker.stop();
+});
+
+// ---------------------------------------------------------------------------
+// What a stalled report says about the one cause that cannot be checked.
+// ---------------------------------------------------------------------------
+
+test("a completion fact built against another row reports stalled naming the fact that was written", { timeout: DEADLINE_MS }, async t => {
+  // The residual case of §10.2 T2. The fact carries exactly the type the
+  // consumer declared, so `defineConsumer` had nothing to refuse and the store
+  // takes the write; it names a row other than the one the handler was given,
+  // so the specification goes on returning this one.
+  const OTHER_ROW = "r9";
+  const handle = recordingHandler(async () => new Mirrored(OTHER_ROW));
+  const { worker, rows, events, logger, store } = workerOver(t, handle, {
+    sweepIntervalMs: 1,
+    sweepRows: [row("r1")]
+  });
+
+  await worker.start();
+
+  await until(() => events.length > 0, "the stalled row was never reported");
+  await quiesce();
+
+  const [event] = events;
+  assert.equal(event.kind, "stalled");
+  assert.equal(phaseOf(rows, "r1"), "quarantined");
+
+  assert.equal(event.completionType, Mirrored.Type, "the event did not name the declared type");
+  assert.deepEqual(
+    [...event.retiringTypes].sort(),
+    [Mirrored.Type, Quarantined.Type].sort(),
+    "the event did not name the types the specification retires a row on"
+  );
+  // The two halves of the comparison, as the event states it: the declared type
+  // is among the retiring types, so the shape of the specification is right and
+  // the fact was written. Which row it points at is what is left.
+  assert.ok(
+    event.retiringTypes.includes(event.completionType),
+    "the declared type is not among the retiring types, so this is not the residual case"
+  );
+
+  assert.equal(
+    event.completionHash,
+    hashOf(new Mirrored(OTHER_ROW)),
+    "completionHash does not name the fact the handler returned"
+  );
+  assert.ok(
+    store.asserted.some(fact => hashOf(fact) === event.completionHash),
+    "completionHash resolves to no fact the store holds"
+  );
+  assert.notEqual(
+    event.completionHash,
+    hashOf(new Mirrored("r1")),
+    "the event named the fact the row was owed rather than the one that was written"
+  );
+
+  // The exhaustion log carries the same members, so the diagnosis is greppable
+  // from a consumer that declared no `onNoProgress`.
+  const logged = logger.lines.warn.find(line => line.message.includes("stalled on r1"));
+  assert.ok(logged !== undefined, "the exhaustion was never logged");
+  assert.equal(logged.data.completionType, Mirrored.Type);
+  assert.equal(logged.data.completionHash, event.completionHash);
+  assert.deepEqual(
+    [...logged.data.retiringTypes].sort(),
+    [Mirrored.Type, Quarantined.Type].sort()
+  );
+
+  await worker.stop();
+});
+
+test("a failed event carries none of the three, because the handler produced no fact", { timeout: DEADLINE_MS }, async t => {
+  const handle = recordingHandler(async () => {
+    throw new Error("nope");
+  });
+  const { worker, stream, events, store } = workerOver(t, handle);
+
+  await worker.start();
+  await stream.push(added("r1"));
+
+  await until(() => events.length > 0, "the failed row was never reported");
+  await quiesce();
+
+  const [event] = events;
+  assert.equal(event.kind, "failed");
+  assert.deepEqual(store.asserted, [], "a fact was written though every attempt rejected");
+  for (const member of ["completionType", "retiringTypes", "completionHash"]) {
+    assert.equal(
+      member in event,
+      false,
+      `a failed event carries ${member}, though there is no completion fact to describe`
+    );
+  }
+
+  await worker.stop();
+});
+
+test("completionHash names the fact of the attempt that exhausted the row, not an earlier one", { timeout: DEADLINE_MS }, async t => {
+  // A different fact per attempt, so the hashes differ and the event can only
+  // be carrying one of them.
+  const handle = recordingHandler(async (rowValue, attempt) =>
+    new Mirrored(`${rowValue.rowHash}#${attempt}`));
+  const { worker, events, store } = workerOver(t, handle, {
+    sweepIntervalMs: 1,
+    sweepRows: [row("r1")]
+  });
+
+  await worker.start();
+
+  await until(() => events.length > 0, "the stalled row was never reported");
+  await quiesce();
+
+  const [event] = events;
+  assert.equal(event.kind, "stalled");
+  assert.equal(handle.handled.length, FAST_RETRY.maxAttempts, "the attempt limit was not honoured");
+
+  // Every attempt's fact is in the store, so the event is picking one of them
+  // rather than naming the only one there is.
+  assert.deepEqual(
+    store.asserted.map(fact => hashOf(fact)),
+    Array.from({ length: FAST_RETRY.maxAttempts }, (unused, index) =>
+      hashOf(new Mirrored(`r1#${index + 1}`))),
+    "the store does not hold one distinct fact per attempt"
+  );
+  assert.equal(
+    event.completionHash,
+    hashOf(new Mirrored(`r1#${FAST_RETRY.maxAttempts}`)),
+    "the event named the fact of an earlier attempt"
+  );
+
+  await worker.stop();
+});
+
+// ---------------------------------------------------------------------------
+// The specification's account of the diagnosis.
+// ---------------------------------------------------------------------------
+
+// §2.3's type block is held to `src/no-progress.ts` by the guard in
+// spec-types.test.js, which compiles it. §10.2 is prose, which nothing
+// compiles, and it is where the specification sends an operator for the
+// residual case, so the members it names are checked here.
+test("§10.2 T2 names the three members as where the residual case is diagnosed", () => {
+  const tensions = fs.readFileSync(specPath, "utf8").split(/^### 10\.2 Tensions$/m)[1];
+  assert.ok(tensions !== undefined, "the specification no longer has a §10.2 Tensions");
+
+  const t2 = tensions.split("**T2 ")[1]?.split("**T3 ")[0];
+  assert.ok(t2 !== undefined, "§10.2 no longer records T2");
+
+  const paragraphs = t2.trim().split(/\n\s*\n/);
+  const last = paragraphs[paragraphs.length - 1].replace(/\s+/g, " ");
+
+  assert.match(last, /`stalled`/, "T2's last paragraph no longer points at the stalled event");
+  for (const member of ["completionType", "retiringTypes", "completionHash"]) {
+    assert.match(
+      last,
+      new RegExp(`\`${member}\``),
+      `T2's last paragraph does not name ${member}`
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

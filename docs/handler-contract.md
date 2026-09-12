@@ -55,6 +55,14 @@ predecessor. It is type-correct, it retires some other row, and the library
 cannot see it: the library does not know which member of your projection should
 hold the row. That one reaches `maxAttempts` and reports as `stalled`.
 
+The report is where you diagnose it. A `stalled` event carries
+`completionType`, the type you declared; `retiringTypes`, the types your
+specification retires a row on; and `completionHash`, the fact the library
+stored on the attempt that gave up. The first is among the second, so the
+specification's shape is right and the fact was written. Resolve the hash and
+read that fact's predecessors: they name the row it retired, which is not the
+row your handler was given.
+
 ## The attempt ends when the fact is stored
 
 The attempt spans your handler and the library's write together, and

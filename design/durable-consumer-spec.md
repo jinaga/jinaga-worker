@@ -198,6 +198,10 @@ rejection; a `stalled` event has no error to carry, because the completion fact
 was stored. Modelled as a union, neither `{ kind: "stalled", error }` nor
 `{ kind: "failed" }` can be constructed (Art. 3).
 
+The three members `stalled` carries beyond the shared ones are on that same
+axis. They describe a completion fact, and a `failed` row has none, so they
+belong to one arm of the union (Art. 3).
+
 ```ts
 export type NoProgressEvent<U = unknown> = FailedEvent<U> | StalledEvent<U>;
 
@@ -217,6 +221,9 @@ export interface FailedEvent<U = unknown> extends NoProgress<U> {
 
 export interface StalledEvent<U = unknown> extends NoProgress<U> {
     kind: "stalled";
+    completionType: string;        // the type declared in `completes`
+    retiringTypes: readonly string[];  // the types the specification retires a row on
+    completionHash: string;        // the fact stored by the attempt that exhausted the row
 }
 ```
 
@@ -379,7 +386,7 @@ intersection of several sets.
 type RowState<U> =
     | { phase: "dispatching"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "waiting";     row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; retryAt: number }
-    | { phase: "completed";   row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
+    | { phase: "completed";   row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; completionHash: string }
     | { phase: "quarantined"; row: SpecificationRow<U> };
 ```
 
@@ -388,9 +395,11 @@ on the phases where they govern something: the attempt limit, and the elapsed
 time a non-progress report carries. A row reaches exhaustion from `dispatching`
 and from `completed` alike, so both carry them, and a quarantined row is never
 attempted again and never reported again, so it carries neither. `completed`
-means the completion fact is in the store. The attempt covers the handler and
-the assertion together (§3.4), so a handler that returns a fact the store
-rejects leaves the row `waiting`.
+means the completion fact is in the store, and `completionHash` names it: the
+write's own answer, hashed where it returns, so a row that cycles through
+`dispatching` again carries the fact of its latest attempt rather than an
+earlier one. The attempt covers the handler and the assertion together (§3.4),
+so a handler that returns a fact the store rejects leaves the row `waiting`.
 
 | From | Event | To |
 | --- | --- | --- |
@@ -488,9 +497,12 @@ Two diagnoses, opposite responses:
   goes on matching its own outstanding set. SIGTERM is an honest response.
 
 `stalled` is decided by the sweep, never by the absence of a removal
-notification — the `completed` rows of §3.3's table. The event names the
-consumer, so an operator can find the completion fact type from the consumer's
-declaration. Diagnostics should quote it.
+notification — the `completed` rows of §3.3's table. The event carries
+`completionType`, `retiringTypes` and `completionHash`, which state the case
+precisely: the declared type is among the retiring types, so the shape of the
+specification is right and the fact was written, and the hash is the fact to
+resolve to see which row it retired. The exhaustion log carries the same
+members, so that reading is greppable without an `onNoProgress` handler.
 
 ### 3.8 Stop
 
@@ -760,7 +772,7 @@ rediscovered.
 | # | Question | Verdict |
 | --- | --- | --- |
 | 1 | Can I represent a state I would then have to forbid? | No. |
-| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` row count is tallied from the row-state map on call, and `dropped` is read through to `RowStream`. `sweepFailures` and `lastSweepFailure` are stored because they are primitive: the map holds phases of rows, not the passes that offered them, so neither is computable from it. |
+| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` row count is tallied from the row-state map on call, and `dropped` is read through to `RowStream`. `sweepFailures` and `lastSweepFailure` are stored because they are primitive: the map holds phases of rows, not the passes that offered them, so neither is computable from it. `completionHash` is primitive for the same reason: which fact an attempt wrote for a row is a fact about this process's history, and no other stored value determines it. The `completionType` and `retiringTypes` a `stalled` event carries are read from the declaration that fixed them, not recomputed per event. |
 | 3 | Do two distinct configurations produce identical behavior? | No. A consumer's `limiter` and the worker's are distinct meanings — private budget versus shared — not two spellings of one. |
 | 4 | Does one variable's valid range depend on another's value? | No. `retry` groups the three knobs that are read together, and no knob's meaning depends on another's value. |
 | 5 | Do frequently changing decisions live inside rarely changing mechanism? | No. Retry is a `RetryPolicy` value the loop reads (§3.5); the loop has no policy branches. |
@@ -794,9 +806,14 @@ Three neighbouring failures are refused earlier. A specification carrying no
 `notExists` on `completes.Type`, and one whose condition names a different fact
 type, are both refused by `defineConsumer`, which compares that literal against
 the specification's inverses. A handler that resolves without producing a fact
-does not compile, because `handle` returns `Promise<C>`. What remains lives in
-the author's vigilance and in `stalled` rather than in the grammar; this library
-cannot close a language it does not own.
+does not compile, because `handle` returns `Promise<C>`. What remains is
+diagnosed in `stalled` rather than refused by the grammar. The event carries
+`completionType`, `retiringTypes` and `completionHash`, which state the residual
+case precisely: the declared type is among the retiring types, so the shape of
+the specification is right and the fact was written, and the hash names the fact
+whose predecessor is the thing left to check. Making that comparison is the
+tension. The library holds both halves and reports them, and cannot close a
+language it does not own.
 
 **T3 — The `completed` phase duplicates the graph (Appendix).** Whether a row
 has been handled is already recorded in the fact graph by the completion fact.
