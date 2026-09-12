@@ -66,7 +66,9 @@ circulation: a failed write costs you the durable record, not the suppression.
 The event `e` carries `kind`, `attempts`, `elapsedMs`, `rowHash`, the consumer's
 name, and the projection the handler saw. A `failed` event carries the last
 rejection as `error`; a `stalled` event has no error to carry, because the
-completion fact was stored every time.
+completion fact was stored every time, and instead names that fact and the types
+around it through `completionType`, `retiringTypes` and `completionHash` — see
+[the handler contract](handler-contract.md).
 
 ## 4. Model release as a successor
 

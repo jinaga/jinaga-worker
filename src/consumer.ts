@@ -147,6 +147,20 @@ export interface Consumer {
     readonly handlerTimeoutMs: number;
 
     /**
+     * The type of the fact `handle` returns, as `completes` named it, and the
+     * fact types the specification retires a row on.
+     *
+     * Both are fixed when the declaration is: the literal is read off
+     * `completes`, and the set is the one `defineConsumer` inverted the
+     * specification for. A `stalled` report carries them, so it reads them here
+     * rather than inverting the specification again (Art. 2).
+     */
+    readonly completionType: string;
+
+    /** @see Consumer.completionType */
+    readonly retiringTypes: readonly string[];
+
+    /**
      * The hash of the consumer's givens: `j.hash` of each, joined. A given that
      * differs by any field after a restart sends both discovery paths silently
      * empty, and this is what an operator compares.
@@ -221,6 +235,8 @@ export function defineConsumer<
         retry: options.retry ?? DEFAULT_RETRY_POLICY,
         sweepIntervalMs,
         handlerTimeoutMs: options.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS,
+        completionType: options.completes.Type,
+        retiringTypes: retiring,
         givenHash: j => options.givens.map(given => j.hash(given as Fact)).join(","),
         subscribe: async (j, feedTimeoutMs) => {
             const streamOptions: RowStreamOptions = feedTimeoutMs === undefined

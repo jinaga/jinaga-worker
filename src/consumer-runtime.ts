@@ -1,4 +1,4 @@
-import { Jinaga, RowStream, SpecificationRow } from "jinaga";
+import { Fact, Jinaga, RowStream, SpecificationRow } from "jinaga";
 import { Consumer } from "./consumer";
 import { Limiter } from "./limiter";
 import { Logger } from "./logger";
@@ -250,7 +250,10 @@ export class ConsumerRuntime {
             // The handler resolved for this row as many times as it is asked
             // to, and the sweep still returns it. That is the one path to
             // `stalled`, and it is the sweep that decides it.
-            this.exhausted(rowHash, previous, { kind: "stalled" });
+            this.exhausted(rowHash, previous, {
+                kind: "stalled",
+                completionHash: previous.completionHash
+            });
             return undefined;
         }
         if (next.phase !== "dispatching" || previous?.phase === "dispatching") {
@@ -322,8 +325,9 @@ export class ConsumerRuntime {
         current: () => boolean
     ): Promise<void> {
         await nextTurn();
+        let completion: Fact;
         try {
-            await this.limiter.run(() => withTimeout(
+            completion = await this.limiter.run(() => withTimeout(
                 this.consumer.handle(row).then(fact => this.j.fact(fact)),
                 this.consumer.handlerTimeoutMs
             ));
@@ -335,7 +339,12 @@ export class ConsumerRuntime {
             return;
         }
         if (current()) {
-            applyRowEvent(this.rows, rowHash, { kind: "resolved" });
+            // The hash is taken from the write's own answer, so it names the
+            // fact the store holds rather than the prototype offered to it.
+            applyRowEvent(this.rows, rowHash, {
+                kind: "resolved",
+                completionHash: this.j.hash(completion)
+            });
         }
     }
 
@@ -396,7 +405,9 @@ export class ConsumerRuntime {
     private exhausted(
         rowHash: string,
         state: { row: SpecificationRow<unknown>; attempts: number; firstAttemptAt: number },
-        diagnosis: { kind: "failed"; error: unknown } | { kind: "stalled" }
+        diagnosis:
+            | { kind: "failed"; error: unknown }
+            | { kind: "stalled"; completionHash: string }
     ): void {
         const noProgress = {
             consumer: this.consumer.name,
@@ -408,7 +419,13 @@ export class ConsumerRuntime {
         };
         const event: NoProgressEvent = diagnosis.kind === "failed"
             ? { ...noProgress, kind: "failed", error: diagnosis.error }
-            : { ...noProgress, kind: "stalled" };
+            : {
+                ...noProgress,
+                kind: "stalled",
+                completionType: this.consumer.completionType,
+                retiringTypes: this.consumer.retiringTypes,
+                completionHash: diagnosis.completionHash
+            };
         // It runs on its own turns and is never awaited: whichever path
         // exhausted the row has a loop to get back to.
         void this.report(state.row, event);

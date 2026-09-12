@@ -45,13 +45,28 @@ export interface FailedEvent<U = unknown> extends NoProgress<U> {
 /**
  * The completion fact was stored `maxAttempts` times and a later sweep still
  * returned the row. A programming error that will not resolve on its own: the
- * specification has no `notExists` on the completion fact, or the fact was
- * written against a predecessor the specification does not read, so the row
- * goes on matching its own outstanding set.
+ * fact was written against a predecessor the specification does not read, so
+ * the row goes on matching its own outstanding set.
  *
  * It is the sweep that decides this, never the absence of a removal
  * notification.
+ *
+ * The three members below are the halves of the comparison the library already
+ * holds: `completionType` is among `retiringTypes`, so the shape of the
+ * specification is right and the fact was written. What is left to check is
+ * which row that fact points at, and `completionHash` is how it is looked up.
+ * They belong to this event alone, because a `failed` row has no completion
+ * fact to name.
  */
 export interface StalledEvent<U = unknown> extends NoProgress<U> {
     kind: "stalled";
+
+    /** The type the consumer declared in `completes`. */
+    completionType: string;
+
+    /** The types the specification retires a row on. */
+    retiringTypes: readonly string[];
+
+    /** The fact stored by the attempt that exhausted the row. */
+    completionHash: string;
 }
