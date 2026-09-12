@@ -1,6 +1,6 @@
 # Worked example
 
-One backlog, eight shapes. The project is a deployment CLI: it builds an
+One backlog, nine shapes. The project is a deployment CLI: it builds an
 artifact, deploys it to staging, and promotes a staging build to production.
 It has an auth check on its deploy API, a `--dry-run` flag, and a `help`
 command.
@@ -66,6 +66,28 @@ apart. The issue scopes down to that.
 directions without ever showing the code that refuses. Check the product's own
 help text before the handler, because a capability that exists is usually
 documented there already.
+
+## R5 Remedy — a guard where the freedom should have been removed
+
+The promote timeout is written in three places: `help promote` prints it in
+prose, `config/defaults.yml` sets it, and the deploy API client hard-codes the
+same number as its own fallback. Nothing ties them together, and they agree
+today by hand. An issue notices this and closes with:
+
+> - A test reads the timeout from all three and asserts they agree.
+
+The criterion is observable and can fail, so R1 passes. It names an outcome, so
+R2 passes. The drift is real and demonstrated, so R3 passes. It cites Article 2,
+so R4 passes. And it asks for exactly what Article 2 diagnoses.
+
+Three independent variables stand where the problem has one, and the acceptance
+adds a fourth thing to maintain rather than removing two. The remedy is to name
+`config/defaults.yml` the source, have the client read it instead of carrying a
+fallback, and have `help promote` print the value instead of spelling it. Then
+no test has anything left to compare.
+
+**The shape:** an acceptance whose subject is agreement between copies. The
+issue has found surplus freedom and asked for a guard to stand over it.
 
 ## I1 Reference — a shared invariant across no shared file
 
@@ -164,6 +186,7 @@ separately, they produce four answers that need not agree.
 
 Every shape here was found in a real backlog audit of `jinaga/factual-mcp` in
 September 2026, across issues 351, 373, 377, 404, 405, 406, 412, 415, and 416.
+The R5 shape came from `jinaga/jinaga-worker`#52 in the same month.
 
 The real cases are not reproduced, for two reasons. They carry domain
 vocabulary that costs a reader more than the shape is worth. And each one
