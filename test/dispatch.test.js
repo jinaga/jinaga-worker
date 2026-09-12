@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { buildModel, JinagaTest, Trace } = require("jinaga");
+const { Trace } = require("jinaga");
 const {
   DEFAULT_HANDLER_TIMEOUT_MS,
   DEFAULT_RETRY_POLICY,
@@ -10,14 +10,19 @@ const {
 } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
 const { backoffMs } = require("../dist/retry.js");
-const { retiringOn } = require("./outstanding-specification.js");
-
-// A given is a fact, and dispatch asks nothing of one but its hash.
-const tenant = id => ({ type: "Test.Tenant", id });
-
-const row = rowHash => ({ result: { id: rowHash }, rowHash });
-const added = rowHash => ({ ...row(rowHash), operation: "added" });
-const removed = rowHash => ({ ...row(rowHash), operation: "removed" });
+const {
+  Mirrored,
+  Quarantined,
+  Subject,
+  Tenant,
+  completionsOf,
+  driving,
+  gatedStore,
+  hashesOf,
+  outstanding,
+  outstandingRow,
+  world
+} = require("./outstanding-model.js");
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -69,46 +74,6 @@ function controllableStream() {
   return stream;
 }
 
-/**
- * The completion fact a handler returns, in jinaga's declaration idiom: the
- * literal on the constructor, and the instance's own `type` read from it.
- */
-class Mirrored {
-  constructor(rowHash) {
-    this.type = Mirrored.Type;
-    this.rowHash = rowHash;
-  }
-}
-Mirrored.Type = "Test.Item.Mirrored";
-
-/**
- * The store's half of the seam: what the library asserted, in order. `respond`
- * is what the store does with each fact before it is recorded, so a test can
- * hold a write open or refuse it the way an authorization rule does.
- */
-function factStore(respond = async prototype => prototype) {
-  const store = {
-    asserted: [],
-    fact: async prototype => {
-      const stored = await respond(prototype);
-      store.asserted.push(prototype);
-      return stored;
-    }
-  };
-  return store;
-}
-
-/** The seam the worker reads: one stream per consumer, and an empty sweep. */
-function fakeJinaga(streams, store = factStore()) {
-  return {
-    hash: fact => `hash-of-${fact.id}`,
-    onDistributionDiagnostic: () => {},
-    subscribeRows: async (specification, given) => streams[given.id],
-    queryRows: async () => [],
-    fact: prototype => store.fact(prototype)
-  };
-}
-
 function deferred() {
   let settle;
   const promise = new Promise((resolve, reject) => {
@@ -125,7 +90,7 @@ function deferred() {
  * A handler returns the completion fact, so `respond` does too, and the default
  * one returns the fact for the row it was given.
  */
-function recordingHandler(respond = async rowValue => new Mirrored(rowValue.rowHash)) {
+function recordingHandler(respond = async rowValue => new Mirrored(rowValue.result)) {
   const waiters = [];
   const handle = async rowValue => {
     handle.handled.push(rowValue.rowHash);
@@ -159,7 +124,7 @@ async function quiesce() {
 /** Wait for a state the dispatcher reaches on its own turns. */
 async function until(condition, what) {
   for (let turn = 0; turn < 10_000; turn += 1) {
-    if (condition()) {
+    if (await condition()) {
       return;
     }
     await new Promise(resolve => setImmediate(resolve));
@@ -168,25 +133,22 @@ async function until(condition, what) {
 }
 
 /**
- * A worker over one consumer per handler, each with its own stream. The sweep
- * reads nothing, so every row in these tests arrives by the stream.
+ * A worker over one consumer per entry, each reading its own tenant's
+ * outstanding set. The sweep is left at a minute, so every row in these tests
+ * arrives on the stream.
  */
-function workerOver(t, handlers, options = {}) {
-  const streams = {};
-  const consumers = Object.entries(handlers).map(([name, handle]) => {
-    streams[name] = controllableStream();
-    return defineConsumer({
-      name,
-      specification: retiringOn(Mirrored.Type),
-      givens: [tenant(name)],
-      completes: Mirrored,
-      handle,
-      sweepIntervalMs: 60_000,
-      ...(options.consumer?.[name] ?? {})
-    });
-  });
-  const worker = new WorkerHost(fakeJinaga(streams, options.store), {
-    consumers,
+function workerOver(t, j, consumers, options = {}) {
+  const defined = consumers.map(({ name, tenant, handle, ...rest }) => defineConsumer({
+    name,
+    specification: outstanding,
+    givens: [tenant],
+    completes: Mirrored,
+    handle,
+    sweepIntervalMs: 60_000,
+    ...rest
+  }));
+  const worker = new WorkerHost(j, {
+    consumers: defined,
     shutdownTimeoutMs: 10,
     logger: silentLogger,
     ...(options.worker ?? {})
@@ -194,67 +156,50 @@ function workerOver(t, handlers, options = {}) {
   // Unconditional, so an assertion that fails still releases the timers and the
   // run ends in a failure rather than in a hang.
   t.after(() => worker.stop());
-  return { worker, streams, rowsOf: name => worker.runtimes[Object.keys(handlers).indexOf(name)].rows };
+  return {
+    worker,
+    rowsOf: name => worker.runtimes[consumers.findIndex(c => c.name === name)].rows
+  };
 }
 
 const phaseOf = (rows, rowHash) => rows.get(rowHash)?.phase;
+
+/** Rules that admit every type but the one named, which is refused where it is asserted. */
+const refusing = refused => a => [Tenant, Subject, Mirrored, Quarantined].reduce(
+  (rules, type) => type === refused ? rules.no(type) : rules.any(type),
+  a
+);
+
+/**
+ * A change carrying a row the store answered with, for the tests that deliver
+ * one themselves.
+ */
+const change = (row, operation) => ({ result: row.result, rowHash: row.rowHash, operation });
 
 // ---------------------------------------------------------------------------
 // Off the notification turn.
 // ---------------------------------------------------------------------------
 
 test("does not dispatch from inside the notification", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
   const handle = recordingHandler();
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle });
+  const { worker, rowsOf } = workerOver(t, j, [{ name: "items", tenant: acme, handle }]);
+  const r1 = await outstandingRow(j, acme, "r1");
 
   await worker.start();
-  await streams.items.push(added("r1"));
 
+  // The row is admitted where the change is delivered, and the handler runs on
+  // a turn of its own after that.
+  await until(() => phaseOf(rowsOf("items"), r1.rowHash) === "dispatching", "the row was never admitted");
   assert.deepEqual(handle.handled, [], "the handler ran on the turn that delivered the change");
-  assert.equal(phaseOf(rowsOf("items"), "r1"), "dispatching", "the row was admitted");
 
   await handle.reaching(1);
-  assert.deepEqual(handle.handled, ["r1"], "the row was dispatched on a later turn");
+  assert.deepEqual(handle.handled, [r1.rowHash], "the row was dispatched on a later turn");
 
   await worker.stop();
 });
 
 test("the library asserts the fact the handler returns, and does not re-enter notify", { timeout: DEADLINE_MS }, async t => {
-  class Tenant {
-    constructor(identifier) {
-      this.type = Tenant.Type;
-      this.identifier = identifier;
-    }
-  }
-  Tenant.Type = "Test.Tenant";
-
-  class Item {
-    constructor(tenant, key) {
-      this.type = Item.Type;
-      this.tenant = tenant;
-      this.key = key;
-    }
-  }
-  Item.Type = "Test.Item";
-
-  class ItemHandled {
-    constructor(item) {
-      this.type = ItemHandled.Type;
-      this.item = item;
-    }
-  }
-  ItemHandled.Type = "Test.Item.Handled";
-
-  const model = buildModel(b => b
-    .type(Tenant)
-    .type(Item, f => f.predecessor("tenant", Tenant))
-    .type(ItemHandled, f => f.predecessor("item", Item)));
-
-  const outstanding = model.given(Tenant).match((owner, facts) =>
-    facts.ofType(Item)
-      .join(item => item.tenant, owner)
-      .notExists(item => facts.ofType(ItemHandled).join(done => done.item, item)));
-
   const counters = [];
   Trace.configure({
     info: () => {},
@@ -266,23 +211,12 @@ test("the library asserts the fact the handler returns, and does not re-enter no
   });
   t.after(() => Trace.off());
 
-  const acme = new Tenant("acme");
-  const j = JinagaTest.create({ model, initialState: [acme] });
-  const handle = recordingHandler(async rowValue => new ItemHandled(rowValue.result));
-  const worker = new WorkerHost(j, {
-    consumers: [defineConsumer({
-      name: "items",
-      specification: outstanding,
-      givens: [acme],
-      completes: ItemHandled,
-      handle
-    })],
-    logger: silentLogger
-  });
-  t.after(() => worker.stop());
+  const { j, acme } = await world();
+  const handle = recordingHandler();
+  const { worker } = workerOver(t, j, [{ name: "items", tenant: acme, handle }]);
 
   await worker.start();
-  await j.fact(new Item(acme, "one"));
+  await j.fact(new Subject(acme, "one"));
   await handle.reaching(1);
   await quiesce();
 
@@ -298,62 +232,83 @@ test("the library asserts the fact the handler returns, and does not re-enter no
     [],
     "the assertion ran from inside the row's own notification"
   );
+
   await worker.stop();
 });
 
 test("a row reaches completed only once the assertion resolves", { timeout: DEADLINE_MS }, async t => {
-  // The write is held open, so the only thing standing between the handler
-  // returning and the row completing is the assertion.
+  // The store holds the completion fact's write open, so the only thing
+  // standing between the handler returning and the row completing is the
+  // assertion. Discovery is the test's, so the removal that fact will produce
+  // does not release the row before the phase can be read.
   const stored = deferred();
-  const store = factStore(async prototype => {
-    await stored.promise;
-    return prototype;
+  const { j, acme } = await world({
+    store: () => gatedStore(async envelopes => {
+      if (envelopes.some(envelope => envelope.fact.type === Mirrored.Type)) {
+        await stored.promise;
+      }
+    })
   });
+  const r1 = await outstandingRow(j, acme, "r1");
+  const stream = controllableStream();
   const handle = recordingHandler();
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, { store });
+  const { worker, rowsOf } = workerOver(
+    t,
+    driving(j, { subscribeRows: async () => stream, queryRows: async () => [] }),
+    [{ name: "items", tenant: acme, handle }]
+  );
 
   await worker.start();
-  await streams.items.push(added("r1"));
+  await stream.push(change(r1, "added"));
   await handle.reaching(1);
   await quiesce();
 
   assert.equal(
-    phaseOf(rowsOf("items"), "r1"),
+    phaseOf(rowsOf("items"), r1.rowHash),
     "dispatching",
     "the row completed when the handler returned, before its fact was stored"
   );
-  assert.deepEqual(store.asserted, [], "the write settled while it was still held open");
+  assert.deepEqual(
+    await hashesOf(j, completionsOf, acme),
+    [],
+    "the write settled while it was still held open"
+  );
 
   stored.resolve();
   await until(
-    () => phaseOf(rowsOf("items"), "r1") === "completed",
+    () => phaseOf(rowsOf("items"), r1.rowHash) === "completed",
     "the row never completed once its fact was stored"
   );
-  assert.deepEqual(store.asserted.map(fact => fact.rowHash), ["r1"]);
+  assert.deepEqual(await hashesOf(j, completionsOf, acme), [j.hash(new Mirrored(r1.result))]);
 
   await worker.stop();
 });
 
 test("an assertion the store refuses takes the retry path", { timeout: DEADLINE_MS }, async t => {
-  // The handler resolves every time; only the write fails. The row is
-  // re-attempted and exhausts, so a refused fact is a rejected attempt.
-  const store = factStore(async () => {
-    throw new Error("not authorized");
-  });
+  // The handler resolves every time; only the write fails, because the store's
+  // rules refuse the completion type. The row is re-attempted and exhausts, so
+  // a refused fact is a rejected attempt.
+  const { j, acme } = await world({ authorization: refusing(Mirrored) });
   const handle = recordingHandler();
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, {
-    store,
-    consumer: { items: { retry: { maxAttempts: 3, baseMs: 0, capMs: 0 } } }
-  });
+  const { worker, rowsOf } = workerOver(t, j, [{
+    name: "items",
+    tenant: acme,
+    handle,
+    retry: { maxAttempts: 3, baseMs: 0, capMs: 0 }
+  }]);
+  const r1 = await outstandingRow(j, acme, "r1");
 
   await worker.start();
-  await streams.items.push(added("r1"));
   await handle.reaching(3);
   await quiesce();
 
-  assert.deepEqual(handle.handled, ["r1", "r1", "r1"], "the row was re-attempted after the refusal");
-  assert.deepEqual(store.asserted, [], "a refused write was recorded as stored");
-  assert.equal(phaseOf(rowsOf("items"), "r1"), "quarantined");
+  assert.deepEqual(
+    handle.handled,
+    [r1.rowHash, r1.rowHash, r1.rowHash],
+    "the row was re-attempted after the refusal"
+  );
+  assert.deepEqual(await hashesOf(j, completionsOf, acme), [], "a refused write reached the store");
+  assert.equal(phaseOf(rowsOf("items"), r1.rowHash), "quarantined");
   assert.equal(worker.status().consumers[0].completed, 0, "a row completed on a fact the store refused");
 
   await worker.stop();
@@ -364,20 +319,28 @@ test("an assertion the store refuses takes the retry path", { timeout: DEADLINE_
 // ---------------------------------------------------------------------------
 
 test("re-attempts a rejected row on backoff and stops at retry.maxAttempts", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
   const handle = recordingHandler(async () => {
     throw new Error("nope");
   });
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, {
-    consumer: { items: { retry: { maxAttempts: 3, baseMs: 0, capMs: 0 } } }
-  });
+  const { worker, rowsOf } = workerOver(t, j, [{
+    name: "items",
+    tenant: acme,
+    handle,
+    retry: { maxAttempts: 3, baseMs: 0, capMs: 0 }
+  }]);
+  const r1 = await outstandingRow(j, acme, "r1");
 
   await worker.start();
-  await streams.items.push(added("r1"));
   await handle.reaching(3);
   await quiesce();
 
-  assert.deepEqual(handle.handled, ["r1", "r1", "r1"], "the row was attempted its three times");
-  assert.equal(phaseOf(rowsOf("items"), "r1"), "quarantined");
+  assert.deepEqual(
+    handle.handled,
+    [r1.rowHash, r1.rowHash, r1.rowHash],
+    "the row was attempted its three times"
+  );
+  assert.equal(phaseOf(rowsOf("items"), r1.rowHash), "quarantined");
   assert.equal(worker.status().consumers[0].quarantined, 1);
   assert.equal(worker.status().consumers[0].completed, 0);
 
@@ -385,33 +348,37 @@ test("re-attempts a rejected row on backoff and stops at retry.maxAttempts", { t
 });
 
 test("releases the limiter slot while waiting to retry", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
   const limiter = new Limiter(1);
   const blocked = deferred();
   const handle = recordingHandler(async rowValue => {
-    if (rowValue.rowHash === "r1") {
+    if (rowValue.result.key === "r1") {
       throw new Error("nope");
     }
     await blocked.promise;
+    return new Mirrored(rowValue.result);
   });
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, {
-    worker: { limiter },
+  const { worker, rowsOf } = workerOver(t, j, [{
+    name: "items",
+    tenant: acme,
+    handle,
     // Long enough that the retry cannot be what lets the second row through.
-    consumer: { items: { retry: { maxAttempts: 5, baseMs: 60_000, capMs: 60_000 } } }
-  });
+    retry: { maxAttempts: 5, baseMs: 60_000, capMs: 60_000 }
+  }], { worker: { limiter } });
+  const r1 = await outstandingRow(j, acme, "r1");
 
   await worker.start();
-  await streams.items.push(added("r1"));
-  await until(() => phaseOf(rowsOf("items"), "r1") === "waiting", "the rejected row never waited");
+  await until(() => phaseOf(rowsOf("items"), r1.rowHash) === "waiting", "the rejected row never waited");
 
   assert.equal(limiter.inFlight, 0, "the slot was held across the backoff wait");
 
   // A consumer at its limit still makes progress on other rows.
-  await streams.items.push(added("r2"));
+  const r2 = await outstandingRow(j, acme, "r2");
   await handle.reaching(2);
 
-  assert.deepEqual(handle.handled, ["r1", "r2"]);
+  assert.deepEqual(handle.handled, [r1.rowHash, r2.rowHash]);
   assert.equal(limiter.inFlight, 1);
-  assert.equal(phaseOf(rowsOf("items"), "r1"), "waiting");
+  assert.equal(phaseOf(rowsOf("items"), r1.rowHash), "waiting");
 
   blocked.resolve();
   await worker.stop();
@@ -434,22 +401,26 @@ test("the backoff is exponential from baseMs, capped at capMs, and jittered into
 });
 
 test("a timed-out handler counts as a rejection, not as progress", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
   const wedged = deferred();
   let settled = false;
-  const handle = recordingHandler(async () => {
+  const handle = recordingHandler(async rowValue => {
     await wedged.promise;
     settled = true;
+    return new Mirrored(rowValue.result);
   });
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, {
-    consumer: {
-      items: { handlerTimeoutMs: 1, retry: { maxAttempts: 1, baseMs: 0, capMs: 0 } }
-    }
-  });
+  const { worker, rowsOf } = workerOver(t, j, [{
+    name: "items",
+    tenant: acme,
+    handle,
+    handlerTimeoutMs: 1,
+    retry: { maxAttempts: 1, baseMs: 0, capMs: 0 }
+  }]);
+  const r1 = await outstandingRow(j, acme, "r1");
 
   await worker.start();
-  await streams.items.push(added("r1"));
   await until(
-    () => phaseOf(rowsOf("items"), "r1") === "quarantined",
+    () => phaseOf(rowsOf("items"), r1.rowHash) === "quarantined",
     "the timed-out attempt was not counted as a rejection"
   );
 
@@ -465,20 +436,23 @@ test("a timed-out handler counts as a rejection, not as progress", { timeout: DE
 // ---------------------------------------------------------------------------
 
 test("total in-flight work across several consumers is bounded by one shared limiter", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
+  const attendeesTenant = await j.fact(new Tenant("attendees"));
   const blocked = deferred();
   const respond = () => blocked.promise;
   const invitations = recordingHandler(respond);
   const attendees = recordingHandler(respond);
   const limiter = new Limiter(2);
-  const { worker, streams } = workerOver(t, { invitations, attendees }, {
-    worker: { limiter, shutdownTimeoutMs: 1 }
-  });
+  const { worker } = workerOver(t, j, [
+    { name: "invitations", tenant: acme, handle: invitations },
+    { name: "attendees", tenant: attendeesTenant, handle: attendees }
+  ], { worker: { limiter, shutdownTimeoutMs: 1 } });
+  for (const [name, tenant] of [["invitations", acme], ["attendees", attendeesTenant]]) {
+    await outstandingRow(j, tenant, `${name}-1`);
+    await outstandingRow(j, tenant, `${name}-2`);
+  }
 
   await worker.start();
-  for (const name of ["invitations", "attendees"]) {
-    await streams[name].push(added(`${name}-1`));
-    await streams[name].push(added(`${name}-2`));
-  }
   // Every row has reached the limiter, so what runs now is what the budget
   // allows rather than what has been dispatched so far.
   await until(() => limiter.waiting === 2, "the rows over the budget never queued for a slot");
@@ -500,22 +474,24 @@ test("total in-flight work across several consumers is bounded by one shared lim
 });
 
 test("a consumer with its own limiter is bounded by that one instead", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
+  const attendeesTenant = await j.fact(new Tenant("attendees"));
   const blocked = deferred();
   const respond = () => blocked.promise;
   const invitations = recordingHandler(respond);
   const attendees = recordingHandler(respond);
   const shared = new Limiter(4);
   const own = new Limiter(1);
-  const { worker, streams } = workerOver(t, { invitations, attendees }, {
-    worker: { limiter: shared, shutdownTimeoutMs: 1 },
-    consumer: { invitations: { limiter: own } }
-  });
+  const { worker } = workerOver(t, j, [
+    { name: "invitations", tenant: acme, handle: invitations, limiter: own },
+    { name: "attendees", tenant: attendeesTenant, handle: attendees }
+  ], { worker: { limiter: shared, shutdownTimeoutMs: 1 } });
+  for (const [name, tenant] of [["invitations", acme], ["attendees", attendeesTenant]]) {
+    await outstandingRow(j, tenant, `${name}-1`);
+    await outstandingRow(j, tenant, `${name}-2`);
+  }
 
   await worker.start();
-  for (const name of ["invitations", "attendees"]) {
-    await streams[name].push(added(`${name}-1`));
-    await streams[name].push(added(`${name}-2`));
-  }
   await until(
     () => own.waiting === 1 && attendees.handled.length === 2,
     "the shared budget did not admit both rows while the private one queued its second"
@@ -534,10 +510,10 @@ test("a consumer with its own limiter is bounded by that one instead", { timeout
 test("a consumer resolves its retry policy, its handler deadline, and no budget of its own", () => {
   const consumer = defineConsumer({
     name: "items",
-    specification: retiringOn(Mirrored.Type),
-    givens: [tenant("items")],
+    specification: outstanding,
+    givens: [new Tenant("items")],
     completes: Mirrored,
-    handle: async row => new Mirrored(row.rowHash)
+    handle: async row => new Mirrored(row.result)
   });
 
   assert.deepEqual(consumer.retry, DEFAULT_RETRY_POLICY);
@@ -550,43 +526,56 @@ test("a consumer resolves its retry policy, its handler deadline, and no budget 
 // A row that has already left the set.
 // ---------------------------------------------------------------------------
 
+// A fact retires a row for good, so the store cannot deliver an addition behind
+// the removal that retired it. The stream can, and these two are what the loop
+// does with it. The rows are the store's own — written, then read back through
+// the specification — so the fact each attempt returns is the one that row is
+// owed, and its hash is the store's.
+
 test("dispatching a row that has already left the set is harmless", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
+  const r1 = await outstandingRow(j, acme, "r1");
+  const stream = controllableStream();
   const attempts = [deferred(), deferred()];
   const handle = recordingHandler((rowValue, call) => attempts[call - 1].promise);
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle });
+  const { worker, rowsOf } = workerOver(
+    t,
+    driving(j, { subscribeRows: async () => stream, queryRows: async () => [] }),
+    [{ name: "items", tenant: acme, handle }]
+  );
 
   await worker.start();
-  await streams.items.push(added("r1"));
+  await stream.push(change(r1, "added"));
   await handle.reaching(1);
 
   // The row leaves the set while its handler is still running, and a stale
   // addition behind the removal finds no entry and is admitted again.
-  await streams.items.push(removed("r1"));
+  await stream.push(change(r1, "removed"));
   assert.equal(rowsOf("items").size, 0);
-  await streams.items.push(added("r1"));
+  await stream.push(change(r1, "added"));
   await handle.reaching(2);
 
-  assert.deepEqual(handle.handled, ["r1", "r1"], "the second attempt did not run the handler");
+  assert.deepEqual(handle.handled, [r1.rowHash, r1.rowHash], "the second attempt did not run the handler");
 
   // The first attempt is no longer the one the map is about, so its outcome
   // leaves the row to the attempt that replaced it. Each attempt resolves with
   // the completion fact its handler owes, which is what the library asserts and
   // reads the row's `completionHash` off.
-  attempts[0].resolve(new Mirrored("r1"));
+  attempts[0].resolve(new Mirrored(r1.result));
   await quiesce();
-  assert.equal(phaseOf(rowsOf("items"), "r1"), "dispatching", "a superseded attempt moved the row");
+  assert.equal(phaseOf(rowsOf("items"), r1.rowHash), "dispatching", "a superseded attempt moved the row");
   assert.equal(worker.status().consumers[0].completed, 0);
 
-  attempts[1].resolve(new Mirrored("r1"));
+  attempts[1].resolve(new Mirrored(r1.result));
   await quiesce();
 
   assert.equal(rowsOf("items").size, 1, "the two attempts left more than one entry");
-  assert.equal(phaseOf(rowsOf("items"), "r1"), "completed");
+  assert.equal(phaseOf(rowsOf("items"), r1.rowHash), "completed");
   assert.deepEqual(
     worker.status().consumers[0],
     {
       name: "items",
-      givenHash: "hash-of-items",
+      givenHash: j.hash(acme),
       dispatching: 0,
       waiting: 0,
       completed: 1,
@@ -601,26 +590,36 @@ test("dispatching a row that has already left the set is harmless", { timeout: D
 });
 
 test("a superseded attempt neither retries nor drains in place of the one that replaced it", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
+  const r1 = await outstandingRow(j, acme, "r1");
+  const stream = controllableStream();
   const attempts = [deferred(), deferred()];
   const handle = recordingHandler((rowValue, call) => attempts[call - 1].promise);
-  const { worker, streams, rowsOf } = workerOver(t, { items: handle }, {
-    worker: { shutdownTimeoutMs: 5_000 },
-    // Long enough that a retry scheduled here would be visible as `waiting`.
-    consumer: { items: { retry: { maxAttempts: 5, baseMs: 60_000, capMs: 60_000 } } }
-  });
+  const { worker, rowsOf } = workerOver(
+    t,
+    driving(j, { subscribeRows: async () => stream, queryRows: async () => [] }),
+    [{
+      name: "items",
+      tenant: acme,
+      handle,
+      // Long enough that a retry scheduled here would be visible as `waiting`.
+      retry: { maxAttempts: 5, baseMs: 60_000, capMs: 60_000 }
+    }],
+    { worker: { shutdownTimeoutMs: 5_000 } }
+  );
 
   await worker.start();
-  await streams.items.push(added("r1"));
+  await stream.push(change(r1, "added"));
   await handle.reaching(1);
-  await streams.items.push(removed("r1"));
-  await streams.items.push(added("r1"));
+  await stream.push(change(r1, "removed"));
+  await stream.push(change(r1, "added"));
   await handle.reaching(2);
 
   attempts[0].reject(new Error("nope"));
   await quiesce();
 
   assert.equal(
-    phaseOf(rowsOf("items"), "r1"),
+    phaseOf(rowsOf("items"), r1.rowHash),
     "dispatching",
     "the superseded rejection paced a row whose handler is still running"
   );
@@ -628,7 +627,7 @@ test("a superseded attempt neither retries nor drains in place of the one that r
 
   // The drain awaits the attempt that is running, not the one it replaced.
   const stopping = worker.stop();
-  attempts[1].resolve(new Mirrored("r1"));
+  attempts[1].resolve(new Mirrored(r1.result));
 
   assert.deepEqual(await stopping, { drained: 1, abandoned: 0 });
 });

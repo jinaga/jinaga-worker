@@ -3,24 +3,14 @@ const assert = require("node:assert/strict");
 
 const { FeedTimeoutError } = require("jinaga");
 const { defineConsumer, createWorker, TimeoutError } = require("../dist/index.js");
-const { retiringOn } = require("./outstanding-specification.js");
+const { Mirrored, Tenant, driving, outstanding, world } = require("./outstanding-model.js");
 
-const tenant = id => ({ type: "Test.Tenant", id });
+const completing = async row => new Mirrored(row.result);
 
-class Mirrored {
-  constructor(rowHash) {
-    this.type = Mirrored.Type;
-    this.rowHash = rowHash;
-  }
-}
-Mirrored.Type = "Test.Item.Mirrored";
-
-const completing = async row => new Mirrored(row.rowHash);
-
-const consumerOf = (name, options = {}) => defineConsumer({
+const consumerOf = (stage, name, options = {}) => defineConsumer({
   name,
-  specification: retiringOn(Mirrored.Type),
-  givens: [tenant(name)],
+  specification: outstanding,
+  givens: [stage.tenants[name]],
   completes: Mirrored,
   handle: completing,
   ...options
@@ -45,24 +35,28 @@ function openStream() {
 }
 
 /**
- * The replicator, as `subscribeRows` sees it.
+ * A real instance, a tenant per consumer, and the replicator as `subscribeRows`
+ * sees it.
  *
  * `answer` is what the replicator does for one consumer, keyed by its given.
  * A consumer with no entry is answered at once. The bound is honoured the way
  * jinaga honours it: a `feedTimeoutMs` that expires before the answer arrives
  * releases the subscription and rejects with `FeedTimeoutError`, so a bound
  * that reaches jinaga is visible here as a rejection rather than as a value
- * the test reads back.
+ * the test reads back. Everything the worker does with facts, its given hashes
+ * among them, is the instance's own.
  */
-function replicator(answer = {}) {
+async function stage(answer = {}) {
+  const { j } = await world();
+  const tenants = {};
+  for (const name of ["invitations", "attendees"]) {
+    tenants[name] = await j.fact(new Tenant(name));
+  }
   const subscribes = [];
-  const j = {
-    subscribes,
-    hash: fact => `hash-of-${fact.id}`,
-    onDistributionDiagnostic: () => {},
+  const replicator = driving(j, {
     subscribeRows: async (specification, given, options) => {
-      subscribes.push({ given: given.id, options });
-      const answering = (answer[given.id] ?? (async () => openStream()))();
+      subscribes.push({ given: given.identifier, options });
+      const answering = (answer[given.identifier] ?? (async () => openStream()))();
       if (options.feedTimeoutMs === undefined) {
         return answering;
       }
@@ -81,10 +75,9 @@ function replicator(answer = {}) {
         );
       });
       return Promise.race([answering, expired]).finally(() => clearTimeout(deadline));
-    },
-    fact: async prototype => prototype
-  };
-  return j;
+    }
+  });
+  return { j, tenants, subscribes, replicator };
 }
 
 /** A replicator that accepts the connection and never answers. */
@@ -102,8 +95,9 @@ async function spend(ms) {
 }
 
 test("a bound and a replicator that never answers rejects with FeedTimeoutError", async () => {
-  const worker = createWorker(replicator({ invitations: silent }), {
-    consumers: [consumerOf("invitations")],
+  const set = await stage({ invitations: silent });
+  const worker = createWorker(set.replicator, {
+    consumers: [consumerOf(set, "invitations")],
     startTimeoutMs: 20
   });
 
@@ -123,7 +117,7 @@ test("a bound and a replicator that never answers rejects with FeedTimeoutError"
 test("a consumer that started before the bound expired is released", async () => {
   const before = timerCount();
   const opened = [];
-  const j = replicator({
+  const set = await stage({
     invitations: async () => {
       const stream = openStream();
       opened.push(stream);
@@ -131,8 +125,8 @@ test("a consumer that started before the bound expired is released", async () =>
     },
     attendees: silent
   });
-  const worker = createWorker(j, {
-    consumers: [consumerOf("invitations"), consumerOf("attendees")],
+  const worker = createWorker(set.replicator, {
+    consumers: [consumerOf(set, "invitations"), consumerOf(set, "attendees")],
     startTimeoutMs: 20
   });
 
@@ -146,12 +140,12 @@ test("a consumer that started before the bound expired is released", async () =>
 test("after the bound expires nothing dispatches and no timer is held", async () => {
   const before = timerCount();
   const handled = [];
-  const j = replicator({ invitations: silent });
-  const worker = createWorker(j, {
-    consumers: [consumerOf("invitations", {
+  const set = await stage({ invitations: silent });
+  const worker = createWorker(set.replicator, {
+    consumers: [consumerOf(set, "invitations", {
       handle: async row => {
         handled.push(row.rowHash);
-        return new Mirrored(row.rowHash);
+        return new Mirrored(row.result);
       }
     })],
     startTimeoutMs: 20
@@ -165,7 +159,7 @@ test("after the bound expires nothing dispatches and no timer is held", async ()
 });
 
 test("the bound is a total across consumers, not a fresh one for each", async () => {
-  const j = replicator({
+  const set = await stage({
     // The first consumer takes part of the budget before it answers, so what
     // the second is given has to be smaller than what the first was given.
     invitations: async () => {
@@ -173,14 +167,14 @@ test("the bound is a total across consumers, not a fresh one for each", async ()
       return openStream();
     }
   });
-  const worker = createWorker(j, {
-    consumers: [consumerOf("invitations"), consumerOf("attendees")],
+  const worker = createWorker(set.replicator, {
+    consumers: [consumerOf(set, "invitations"), consumerOf(set, "attendees")],
     startTimeoutMs: 1_000
   });
 
   await worker.start();
 
-  const [first, second] = j.subscribes.map(subscribe => subscribe.options.feedTimeoutMs);
+  const [first, second] = set.subscribes.map(subscribe => subscribe.options.feedTimeoutMs);
   assert.ok(first <= 1_000, `the first bound is the budget, got ${first}`);
   assert.ok(second < first, `the second got ${second}, which is not less than ${first}`);
   assert.ok(second > 0);
@@ -189,29 +183,29 @@ test("the bound is a total across consumers, not a fresh one for each", async ()
 });
 
 test("a budget spent before the last consumer subscribes rejects rather than reaching jinaga", async () => {
-  const j = replicator({
+  const set = await stage({
     invitations: async () => {
       await spend(30);
       return openStream();
     }
   });
-  const worker = createWorker(j, {
-    consumers: [consumerOf("invitations"), consumerOf("attendees")],
+  const worker = createWorker(set.replicator, {
+    consumers: [consumerOf(set, "invitations"), consumerOf(set, "attendees")],
     startTimeoutMs: 20
   });
 
   await assert.rejects(() => worker.start(), FeedTimeoutError);
 
   assert.deepEqual(
-    j.subscribes.map(subscribe => subscribe.given),
+    set.subscribes.map(subscribe => subscribe.given),
     ["invitations"],
     "the second consumer never reaches jinaga with a non-positive bound"
   );
 });
 
 test("with no bound set, no feedTimeoutMs is passed and start() stays unsettled", async () => {
-  const j = replicator({ invitations: silent });
-  const worker = createWorker(j, { consumers: [consumerOf("invitations")] });
+  const set = await stage({ invitations: silent });
+  const worker = createWorker(set.replicator, { consumers: [consumerOf(set, "invitations")] });
 
   let settled = false;
   const starting = worker.start();
@@ -222,18 +216,18 @@ test("with no bound set, no feedTimeoutMs is passed and start() stays unsettled"
   await nextTurn();
 
   assert.equal(settled, false, "an unbounded subscribe leaves start() pending");
-  assert.deepEqual(j.subscribes.map(subscribe => subscribe.options), [{ capacity: 1024 }]);
+  assert.deepEqual(set.subscribes.map(subscribe => subscribe.options), [{ capacity: 1024 }]);
 });
 
 test("a structural denial rejects with the denial, bound or not", async () => {
   for (const startTimeoutMs of [undefined, 1_000]) {
-    const j = replicator({
+    const set = await stage({
       invitations: async () => {
         throw new Error("distribution denied");
       }
     });
-    const worker = createWorker(j, {
-      consumers: [consumerOf("invitations")],
+    const worker = createWorker(set.replicator, {
+      consumers: [consumerOf(set, "invitations")],
       ...(startTimeoutMs === undefined ? {} : { startTimeoutMs })
     });
 
@@ -245,11 +239,12 @@ test("a structural denial rejects with the denial, bound or not", async () => {
   }
 });
 
-test("a bound that is not a length of time is refused where the worker is built", () => {
+test("a bound that is not a length of time is refused where the worker is built", async () => {
+  const set = await stage();
   for (const startTimeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1]) {
     assert.throws(
-      () => createWorker(replicator(), {
-        consumers: [consumerOf("invitations")],
+      () => createWorker(set.replicator, {
+        consumers: [consumerOf(set, "invitations")],
         startTimeoutMs
       }),
       error => {
@@ -265,15 +260,15 @@ test("a bound that is not a length of time is refused where the worker is built"
 });
 
 test("start() after an aborted start does not subscribe again", async () => {
-  const j = replicator({ invitations: silent });
-  const worker = createWorker(j, {
-    consumers: [consumerOf("invitations")],
+  const set = await stage({ invitations: silent });
+  const worker = createWorker(set.replicator, {
+    consumers: [consumerOf(set, "invitations")],
     startTimeoutMs: 20
   });
 
   await assert.rejects(() => worker.start(), FeedTimeoutError);
-  assert.equal(j.subscribes.length, 1);
+  assert.equal(set.subscribes.length, 1);
 
   await assert.rejects(() => worker.start(), FeedTimeoutError);
-  assert.equal(j.subscribes.length, 1, "the worker is spent; a retry builds a new one");
+  assert.equal(set.subscribes.length, 1, "the worker is spent; a retry builds a new one");
 });

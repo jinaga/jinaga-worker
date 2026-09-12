@@ -3,41 +3,46 @@ const assert = require("node:assert/strict");
 
 const { defineConsumer, createWorker } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
-const { retiringOn } = require("./outstanding-specification.js");
-
-// A given is a fact, and the only thing the lifecycle asks of one is its hash.
-const tenant = id => ({ type: "Test.Tenant", id });
-
-/** The completion fact a handler returns, in jinaga's declaration idiom. */
-class Mirrored {
-  constructor(rowHash) {
-    this.type = Mirrored.Type;
-    this.rowHash = rowHash;
-  }
-}
-Mirrored.Type = "Test.Item.Mirrored";
+const {
+  Mirrored,
+  Tenant,
+  driving,
+  outstanding,
+  outstandingRow,
+  world
+} = require("./outstanding-model.js");
 
 /**
  * A handler that completes its row. Most of these tests are about the
  * lifecycle and never dispatch one, so this is what a consumer declares when
  * the handler itself is not what the test is about.
  */
-const completing = async row => new Mirrored(row.rowHash);
+const completing = async row => new Mirrored(row.result);
 
-// The seam the worker uses: a hash per given, and a row stream per consumer.
-function fakeJinaga(streams = {}) {
-  return {
-    hash: fact => `hash-of-${fact.id}`,
-    onDistributionDiagnostic: () => {},
+/**
+ * The stage these tests run on: a real instance, a tenant per consumer, and a
+ * row of each tenant's own outstanding set.
+ *
+ * The lifecycle is about what a worker does around the replicator, so the
+ * subscribe is the test's: `streams` answers it, keyed by the consumer's given.
+ * Everything else — the given hashes a worker logs, the completion fact a
+ * drained attempt writes — is the instance's own.
+ */
+async function stage(streams = {}) {
+  const { j } = await world();
+  const tenants = {};
+  const rows = {};
+  for (const name of ["invitations", "attendees"]) {
+    tenants[name] = await j.fact(new Tenant(name));
+    rows[name] = await outstandingRow(j, tenants[name], "row-1");
+  }
+  const replicator = driving(j, {
     subscribeRows: async (specification, given) => {
-      const open = streams[given.id];
-      if (open === undefined) {
-        return openStream();
-      }
-      return open();
-    },
-    fact: async prototype => prototype
-  };
+      const open = streams[given.identifier];
+      return open === undefined ? openStream() : await open();
+    }
+  });
+  return { j, tenants, rows, replicator };
 }
 
 function openStream() {
@@ -58,7 +63,7 @@ function openStream() {
  * `dropped`. Both are how a test sees that a runtime took the stream: one
  * dispatches, the other reaches `status()`.
  */
-function offeringStream(rowHash) {
+function offeringStream(row) {
   const stream = {
     stopped: 0,
     dropped: 3,
@@ -67,7 +72,7 @@ function offeringStream(rowHash) {
       stream.stopped += 1;
     },
     [Symbol.asyncIterator]: async function* () {
-      yield { operation: "added", result: {}, rowHash };
+      yield { operation: "added", result: row.result, rowHash: row.rowHash };
     }
   };
   return stream;
@@ -87,13 +92,10 @@ function deferred() {
   return { promise, ...settle };
 }
 
-// The lifecycle never runs the specification; the fake Jinaga keys its streams
-// on the consumer's given. It is a real one because `defineConsumer` inverts it
-// to check that the consumer can retire the row it is given.
-const consumerOf = (name, handle, options = {}) => defineConsumer({
+const consumerOf = (stage, name, handle, options = {}) => defineConsumer({
   name,
-  specification: retiringOn(Mirrored.Type),
-  givens: [tenant(name)],
+  specification: outstanding,
+  givens: [stage.tenants[name]],
   completes: Mirrored,
   handle,
   ...options
@@ -109,8 +111,9 @@ const timerCount = () =>
   process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;
 
 test("stop() before start() resolves cleanly and reports zeros", async () => {
-  const worker = createWorker(fakeJinaga(), {
-    consumers: [consumerOf("invitations", completing)],
+  const set = await stage();
+  const worker = createWorker(set.replicator, {
+    consumers: [consumerOf(set, "invitations", completing)],
     logger: recordingLogger()
   });
 
@@ -118,18 +121,20 @@ test("stop() before start() resolves cleanly and reports zeros", async () => {
 });
 
 test("stop() drains a settled handler and counts it in drained", async () => {
+  const set = await stage();
   const handler = deferred();
-  const worker = new WorkerHost(fakeJinaga(), {
-    consumers: [consumerOf("invitations", () => handler.promise)],
+  const worker = new WorkerHost(set.replicator, {
+    consumers: [consumerOf(set, "invitations", () => handler.promise)],
     logger: recordingLogger()
   });
   await worker.start();
 
-  const running = worker.runtimes[0].attempt("row-1", { result: {}, rowHash: "row-1" });
+  const row = set.rows.invitations;
+  const running = worker.runtimes[0].attempt(row.rowHash, row);
   assert.equal(worker.status().consumers[0].dispatching, 1);
 
   const stopping = worker.stop();
-  handler.resolve(new Mirrored("row-1"));
+  handler.resolve(new Mirrored(row.result));
   await running;
 
   assert.deepEqual(await stopping, { drained: 1, abandoned: 0 });
@@ -137,14 +142,16 @@ test("stop() drains a settled handler and counts it in drained", async () => {
 });
 
 test("a handler still running at the deadline is abandoned without delaying stop()", async () => {
+  const set = await stage();
   const handler = deferred();
-  const worker = new WorkerHost(fakeJinaga(), {
-    consumers: [consumerOf("invitations", () => handler.promise)],
+  const worker = new WorkerHost(set.replicator, {
+    consumers: [consumerOf(set, "invitations", () => handler.promise)],
     shutdownTimeoutMs: 20,
     logger: recordingLogger()
   });
   await worker.start();
-  worker.runtimes[0].attempt("row-1", { result: {}, rowHash: "row-1" });
+  const row = set.rows.invitations;
+  worker.runtimes[0].attempt(row.rowHash, row);
 
   const startedAt = Date.now();
   const report = await worker.stop();
@@ -154,24 +161,25 @@ test("a handler still running at the deadline is abandoned without delaying stop
   assert.ok(elapsed < 1_000, `stop() waited ${elapsed}ms past its 20ms deadline`);
   assert.equal(worker.status().consumers[0].dispatching, 1);
 
-  handler.resolve();
+  handler.resolve(new Mirrored(row.result));
 });
 
 test("an attempt is suppressed while the map holds an entry for the row", async () => {
+  const set = await stage();
   const handler = deferred();
   let handled = 0;
-  const worker = new WorkerHost(fakeJinaga(), {
-    consumers: [consumerOf("invitations", () => {
+  const worker = new WorkerHost(set.replicator, {
+    consumers: [consumerOf(set, "invitations", () => {
       handled += 1;
       return handler.promise;
     })],
     logger: recordingLogger()
   });
   const runtime = worker.runtimes[0];
-  const row = { result: {}, rowHash: "row-1" };
+  const row = set.rows.invitations;
 
-  assert.notEqual(runtime.attempt("row-1", row), undefined);
-  assert.equal(runtime.attempt("row-1", row), undefined);
+  assert.notEqual(runtime.attempt(row.rowHash, row), undefined);
+  assert.equal(runtime.attempt(row.rowHash, row), undefined);
   assert.equal(handled, 0, "the handler ran on the offering turn");
   assert.equal(worker.status().consumers[0].dispatching, 1);
 
@@ -180,19 +188,21 @@ test("an attempt is suppressed while the map holds an entry for the row", async 
   await nextTurn();
   assert.equal(handled, 1);
 
-  handler.resolve();
+  handler.resolve(new Mirrored(row.result));
   await worker.stop();
 });
 
 test("stop() drops waiting rows rather than draining them", async () => {
-  const worker = new WorkerHost(fakeJinaga(), {
-    consumers: [consumerOf("invitations", completing)],
+  const set = await stage();
+  const worker = new WorkerHost(set.replicator, {
+    consumers: [consumerOf(set, "invitations", completing)],
     logger: recordingLogger()
   });
   const rows = worker.runtimes[0].rows;
-  rows.set("row-1", {
+  const row = set.rows.invitations;
+  rows.set(row.rowHash, {
     phase: "waiting",
-    row: { result: {}, rowHash: "row-1" },
+    row,
     attempts: 1,
     firstAttemptAt: 0,
     retryAt: 1
@@ -205,7 +215,7 @@ test("stop() drops waiting rows rather than draining them", async () => {
 test("start() rejects when subscribeRows rejects, and leaves no timers behind", async () => {
   const before = timerCount();
   const opened = [];
-  const j = fakeJinaga({
+  const set = await stage({
     invitations: () => {
       const stream = openStream();
       opened.push(stream);
@@ -215,10 +225,10 @@ test("start() rejects when subscribeRows rejects, and leaves no timers behind", 
       throw new Error("distribution denied");
     }
   });
-  const worker = createWorker(j, {
+  const worker = createWorker(set.replicator, {
     consumers: [
-      consumerOf("invitations", completing),
-      consumerOf("attendees", completing)
+      consumerOf(set, "invitations", completing),
+      consumerOf(set, "attendees", completing)
     ],
     logger: recordingLogger()
   });
@@ -233,12 +243,13 @@ test("start() rejects when subscribeRows rejects, and leaves no timers behind", 
 test("stop() during a pending subscribe releases the stream the replicator answers with", async () => {
   const before = timerCount();
   const answer = deferred();
-  const stream = offeringStream("row-1");
   let handled = 0;
-  const worker = new WorkerHost(fakeJinaga({ invitations: () => answer.promise }), {
-    consumers: [consumerOf("invitations", async row => {
+  const set = await stage({ invitations: () => answer.promise });
+  const stream = offeringStream(set.rows.invitations);
+  const worker = new WorkerHost(set.replicator, {
+    consumers: [consumerOf(set, "invitations", async row => {
       handled += 1;
-      return new Mirrored(row.rowHash);
+      return new Mirrored(row.result);
     })],
     logger: recordingLogger()
   });
@@ -257,8 +268,9 @@ test("stop() during a pending subscribe releases the stream the replicator answe
   assert.deepEqual(report, { drained: 0, abandoned: 0 });
 
   const status = worker.status().consumers[0];
-  // `dropped` is read through the stream the runtime holds, so the fake's
-  // non-zero count is what a stream assigned after `stop()` would surface.
+  // `dropped` is read through the stream the runtime holds, so the answered
+  // stream's non-zero count is what a stream assigned after `stop()` would
+  // surface.
   assert.equal(status.dropped, 0, "a stream was assigned to a stopped consumer");
   assert.equal(status.dispatching, 0);
   assert.equal(handled, 0, "a stopped consumer dispatched a row");
@@ -269,11 +281,12 @@ test("a consumer that subscribed before stop() drains while a pending one is rel
   const before = timerCount();
   const answer = deferred();
   const handler = deferred();
-  const pending = offeringStream("row-2");
-  const worker = new WorkerHost(fakeJinaga({ attendees: () => answer.promise }), {
+  const set = await stage({ attendees: () => answer.promise });
+  const pending = offeringStream(set.rows.attendees);
+  const worker = new WorkerHost(set.replicator, {
     consumers: [
-      consumerOf("invitations", () => handler.promise),
-      consumerOf("attendees", completing)
+      consumerOf(set, "invitations", () => handler.promise),
+      consumerOf(set, "attendees", completing)
     ],
     logger: recordingLogger()
   });
@@ -281,10 +294,11 @@ test("a consumer that subscribed before stop() drains while a pending one is rel
   // The first consumer has its stream; the second is still waiting for one.
   const starting = worker.start();
   await nextTurn();
-  const running = worker.runtimes[0].attempt("row-1", { result: {}, rowHash: "row-1" });
+  const row = set.rows.invitations;
+  const running = worker.runtimes[0].attempt(row.rowHash, row);
 
   const stopping = worker.stop();
-  handler.resolve(new Mirrored("row-1"));
+  handler.resolve(new Mirrored(row.result));
   await running;
   const report = await stopping;
   answer.resolve(pending);
@@ -300,10 +314,11 @@ test("a consumer that subscribed before stop() drains while a pending one is rel
 
 test("a started worker holds a sweep timer per consumer until stop()", async () => {
   const before = timerCount();
-  const worker = createWorker(fakeJinaga(), {
+  const set = await stage();
+  const worker = createWorker(set.replicator, {
     consumers: [
-      consumerOf("invitations", completing),
-      consumerOf("attendees", completing)
+      consumerOf(set, "invitations", completing),
+      consumerOf(set, "attendees", completing)
     ],
     logger: recordingLogger()
   });
@@ -316,11 +331,12 @@ test("a started worker holds a sweep timer per consumer until stop()", async () 
 });
 
 test("the given hash is logged once per consumer at startup", async () => {
+  const set = await stage();
   const logger = recordingLogger();
-  const worker = createWorker(fakeJinaga(), {
+  const worker = createWorker(set.replicator, {
     consumers: [
-      consumerOf("invitations", completing),
-      consumerOf("attendees", completing)
+      consumerOf(set, "invitations", completing),
+      consumerOf(set, "attendees", completing)
     ],
     logger
   });
@@ -331,48 +347,42 @@ test("the given hash is logged once per consumer at startup", async () => {
   assert.deepEqual(
     startup.map(entry => [entry.level, entry.data.consumer, entry.data.givenHash]),
     [
-      ["info", "invitations", "hash-of-invitations"],
-      ["info", "attendees", "hash-of-attendees"]
+      ["info", "invitations", set.j.hash(set.tenants.invitations)],
+      ["info", "attendees", set.j.hash(set.tenants.attendees)]
     ]
   );
   for (const entry of startup) {
-    assert.match(entry.message, new RegExp(entry.data.givenHash));
+    assert.ok(
+      entry.message.includes(entry.data.givenHash),
+      "the line does not carry the hash its data reports"
+    );
   }
 
   await worker.stop();
 });
 
 test("status() reports each consumer's given hash and its counts, derived", async () => {
-  const worker = createWorker(fakeJinaga(), {
+  const set = await stage();
+  const worker = createWorker(set.replicator, {
     consumers: [
-      consumerOf("invitations", completing),
-      consumerOf("attendees", completing)
+      consumerOf(set, "invitations", completing),
+      consumerOf(set, "attendees", completing)
     ],
     logger: recordingLogger()
   });
 
+  const counts = {
+    dispatching: 0,
+    waiting: 0,
+    completed: 0,
+    quarantined: 0,
+    dropped: 0,
+    sweepFailures: 0
+  };
   assert.deepEqual(worker.status(), {
     consumers: [
-      {
-        name: "invitations",
-        givenHash: "hash-of-invitations",
-        dispatching: 0,
-        waiting: 0,
-        completed: 0,
-        quarantined: 0,
-        dropped: 0,
-        sweepFailures: 0
-      },
-      {
-        name: "attendees",
-        givenHash: "hash-of-attendees",
-        dispatching: 0,
-        waiting: 0,
-        completed: 0,
-        quarantined: 0,
-        dropped: 0,
-        sweepFailures: 0
-      }
+      { name: "invitations", givenHash: set.j.hash(set.tenants.invitations), ...counts },
+      { name: "attendees", givenHash: set.j.hash(set.tenants.attendees), ...counts }
     ]
   });
 
@@ -380,25 +390,24 @@ test("status() reports each consumer's given hash and its counts, derived", asyn
 });
 
 test("a consumer resolves the sweep interval and the stream capacity", async () => {
-  assert.equal(consumerOf("invitations", completing).sweepIntervalMs, 60_000);
+  const set = await stage();
+  assert.equal(consumerOf(set, "invitations", completing).sweepIntervalMs, 60_000);
   assert.equal(
-    consumerOf("invitations", completing, { sweepIntervalMs: 5 }).sweepIntervalMs,
+    consumerOf(set, "invitations", completing, { sweepIntervalMs: 5 }).sweepIntervalMs,
     5
   );
 
   const requested = [];
-  const j = {
-    hash: fact => `hash-of-${fact.id}`,
-    onDistributionDiagnostic: () => {},
+  const j = driving(set.j, {
     subscribeRows: async (specification, ...args) => {
       requested.push(args);
       return openStream();
     }
-  };
+  });
   const worker = createWorker(j, {
     consumers: [
-      consumerOf("invitations", completing),
-      consumerOf("attendees", completing, { capacity: 4 })
+      consumerOf(set, "invitations", completing),
+      consumerOf(set, "attendees", completing, { capacity: 4 })
     ],
     logger: recordingLogger()
   });
@@ -406,8 +415,8 @@ test("a consumer resolves the sweep interval and the stream capacity", async () 
   await worker.start();
 
   assert.deepEqual(requested, [
-    [tenant("invitations"), { capacity: 1024 }],
-    [tenant("attendees"), { capacity: 4 }]
+    [set.tenants.invitations, { capacity: 1024 }],
+    [set.tenants.attendees, { capacity: 4 }]
   ]);
 
   await worker.stop();
