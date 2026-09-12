@@ -1,6 +1,6 @@
 ---
 name: refining-issues
-description: Turns a backlog issue in jinaga/jinaga-worker into one that an unattended night-shift agent can implement, and turns a coupled set into a chain that stacks. Use when auditing whether an issue is ready for the `ready` label, when grouping issues for planning, when an issue's acceptance ends in an unmade decision, when two issues must land together, or when a change to the spec has just changed how a set of issues is partitioned. Encodes seven checks — four that decide readiness and three that decide independence — plus the four moves that fix a failed check.
+description: Turns a backlog issue in jinaga/jinaga-worker into one that an unattended night-shift agent can implement, and turns a coupled set into a chain that stacks. Use when auditing whether an issue is ready for the `ready` label, when grouping issues for planning, when an issue's acceptance ends in an unmade decision, when two issues must land together, when an issue asks for a test that guards a redundancy rather than removing it, or when a change to the spec has just changed how a set of issues is partitioned. Encodes eight checks — five that decide readiness and three that decide independence — plus the five moves that fix a failed check.
 ---
 
 # Refining issues
@@ -15,7 +15,7 @@ it names and the constitution articles its conformance criteria cite, and works
 it with nobody watching. Refining is what makes that possible. Applying the
 label is the maintainer's call, never yours.
 
-Seven checks decide it. Run R1 to R4 against one issue. Run I1 to I3 across a
+Eight checks decide it. Run R1 to R5 against one issue. Run I1 to I3 across a
 set. Each failed check has one move.
 
 Do not rewrite an issue that passes. A well-argued problem statement that
@@ -87,6 +87,34 @@ to invent a requirement: if no section covers the behavior the issue wants, the
 issue is asking for a spec change, which is section 9's territory and a
 maintainer's decision.
 
+### R5. Remedy
+
+Does the issue prescribe the remedy its articles prescribe, or a guard over the
+defect they name?
+
+R4 asks whether the conformance criteria cite an article. R5 asks whether the
+requirement obeys the article it cites. They fail independently: an issue can
+name Article 2 correctly and then ask for precisely what Article 2 diagnoses.
+
+The shape is a value written in more than one place, and an acceptance that
+asks for a test asserting the copies agree. Article 2's diagnostic names "the
+same fact maintained in two places" as the defect itself, and Article 3 answers
+it: "The remedy is not a validation check that rejects the state at runtime. It
+is a representation in which the state cannot be formed." A test over the
+copies leaves every degree of freedom standing and adds one more moving part to
+keep.
+
+Ask which copy is the source of truth, and whether the rest can be derived or
+deleted. When they can, that deletion is the requirement, and the test that
+would have guarded them has nothing left to compare.
+
+Fail R5 when the acceptance's subject is agreement between two representations
+of one fact — a runtime validation, a lint, a CI step, or a test — rather than
+the removal of one of them. The move is **Remove the freedom**.
+
+Run R5 after R4, because it reads the article the issue cites. An issue that
+fails R4 offers nothing to check the requirement against.
+
 ## Independence — run across a set
 
 ### I1. Reference
@@ -143,7 +171,7 @@ layer branches from the lower one's branch and opens a stacked pull request, so
 neither waits for the other to merge. Ordering is what the night shift needs;
 serialization is not.
 
-## The four moves
+## The five moves
 
 **Extract a decision.** Several issues stalling on "Directions:" or "Decide
 first" are often stalling on one decision in different words. Record it once,
@@ -153,6 +181,20 @@ produces answers that need not agree. When the decision is one the spec already
 owns — a default, a vocabulary choice, a division of responsibility — the note
 is not yours to write: it is a spec change, and section 9 is where it lands, by
 the maintainer.
+
+**Remove the freedom.** When R5 fails, name the source of truth and rewrite the
+acceptance as the deletion or derivation of every other copy. The guard the
+issue asked for goes with them: with one statement left there is nothing to
+compare, which is Article 3's validation that "becomes unnecessary because it
+becomes vacuous."
+
+Write two consequences into the issue. Say that no test asserting agreement is
+to be added, because an agent reaching for evidence will otherwise supply one
+and restore the freedom the issue just removed. And where one of the copies
+lives in `design/durable-consumer-spec.md`, deleting it is a spec amendment, so
+the issue has to declare itself one in its title and its acceptance:
+`.night-shift/config.md` forbids an implementation slice from editing the spec,
+and the night shift stops and asks rather than guessing which kind it holds.
 
 **Decompose the axis.** When I2 fails, the fix belongs to whichever issue owns
 the separation rather than to the issue that noticed it. Decomposing the predicate is
@@ -171,8 +213,8 @@ waits on a dependency, because bundling makes the free part wait.
 
 ## Worked example
 
-`references/worked-example.md` runs R1 to R3 and I1 to I3 plus both structural
-moves over one backlog, and closes each with the shape to recognize. The domain
+`references/worked-example.md` runs R1 to R3, R5, and I1 to I3 plus both
+structural moves over one backlog, and closes each with the shape to recognize. The domain
 is invented so nothing in it decays as a real backlog is worked. Read it when a
 check's description is not enough to recognize what is in front of you.
 
