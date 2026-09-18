@@ -7,7 +7,7 @@
 [The specification](design/durable-consumer-spec.md) is the implementation
 contract, and it is the requirement a change answers to: accepted, and ahead of
 the code. Every structure in it is scored against
-[the constitution](design/constitution/degrees-of-freedom-constitution.md), whose
+[the constitution](.claude/skills/degrees-of-freedom/degrees-of-freedom-constitution.md), whose
 articles an issue's conformance criteria cite by number.
 
 The design record is not addressed to someone installing the package, so it

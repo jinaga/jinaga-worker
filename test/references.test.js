@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { repoRoot, prose, comments, references } = require("./markdown-references");
+const { repoRoot, prose, comments, references, repositoryUrls } = require("./markdown-references");
 
 function trackedFiles() {
   const output = execFileSync("git", ["ls-files", "-z"], {
@@ -33,6 +33,12 @@ test("every path this repository names resolves to a file that exists", () => {
       }
       const base = fromRoot ? repoRoot : path.dirname(path.join(repoRoot, file));
       if (!fs.existsSync(path.resolve(base, targetPath))) {
+        broken.push(`${file} -> ${target}`);
+      }
+    }
+
+    for (const target of repositoryUrls(text)) {
+      if (!fs.existsSync(path.join(repoRoot, target))) {
         broken.push(`${file} -> ${target}`);
       }
     }

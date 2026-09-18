@@ -2,7 +2,7 @@
 
 This file is loaded into every conversation. It captures project-wide rules that apply everywhere.
 
-For what the package is and the contract it implements, read `design/durable-consumer-spec.md`. Every structure in that spec is answerable to `design/constitution/degrees-of-freedom-constitution.md`.
+For what the package is and the contract it implements, read `design/durable-consumer-spec.md`. Every structure in that spec is answerable to the constitution in `.claude/skills/degrees-of-freedom/degrees-of-freedom-constitution.md`, installed from `michaellperry/skills`.
 
 Issues labelled `ready` are queued for automated work. `.claude/skills/night-shift-worker/SKILL.md` documents that protocol, and `.night-shift/config.md` carries everything specific to this repository: how to tell whether an issue is already claimed or already landed, how the dependency chain between the implementation slices decides ordering, when to stop and ask a question instead of guessing, how stacked pull requests are opened and registered, and how each run is recorded so the reasoning survives the container.
 
@@ -19,3 +19,5 @@ Issues labelled `ready` are queued for automated work. `.claude/skills/night-shi
   The one exception: an explicitly temporary, in-flight decision-support doc — one that states its own expiry (e.g. scoped to one implementation effort, discarded once it lands) — may carry a "why we changed direction" note until that effort finishes.
 
 - **No functional scars.** The rule above is about prose; code carries the same mark just as easily. When a mechanism is renamed or replaced — an API cutover, a field rename, an option that moved homes — grep the old identifier across the whole tree, not just the file you touched, and port every match forward or delete it. A function that still checks for a name nobody uses anymore does not error. It quietly stops matching anything, so it returns zero (or an empty record) forever, and that zero ships in every committed baseline as if it were real signal. Sweep for this scar in the same pass that sweeps the reversed-decision prose above.
+
+- **No low-value tests.** A test earns its place when it can fail for a reason other than an edit to the text it asserts on. An assertion that a doc comment, a `docs/` page, or the specification holds a given phrase restates that text in a second file, so it fails when an author rewords the page and passes when the page is wrong. Test a documentation surface by compiling its `ts` blocks against the shipped types (`test/spec-guard.js`), by resolving the paths it names (`test/references.test.js`), or by deriving the expectation from the code it documents. Where nothing derives, the documentation stands on review, and no test is added.
