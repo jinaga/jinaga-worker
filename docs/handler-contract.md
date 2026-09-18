@@ -114,10 +114,12 @@ quarantined and the worker emits a `failed` event. See
 
 So the handler keeps no retry of its own. One that catches its own failures and
 tries again before it settles reports every one of those tries as a single
-attempt: `attempts` stops counting what the loop tried, and the wall-clock
-budget `maxAttempts` sets is spent long after the operator who configured it
-expects. The retry policy is the consumer's `retry`, and a handler carrying its
-own competes with it.
+attempt. `attempts` then stops counting what the loop tried, and the row
+reaches quarantine later than the policy puts it: time-to-quarantine is
+`maxAttempts` attempts spaced by the backoff `baseMs` and `capMs` govern, and a
+hidden retry stretches each of those attempts without spending one. The retry
+policy is the consumer's `retry`, and a handler carrying its own competes with
+it.
 
 ## Where the handler runs
 
