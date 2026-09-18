@@ -20,14 +20,20 @@ private, so never carry its contents into an issue or pull request in this one.
 ## Read first
 
 - `CLAUDE.md` — layout, build, and conventions.
-- `design/durable-consumer-spec.md` — the accepted specification this
-  repository implements. Every issue names the sections it answers to.
-- `design/constitution/degrees-of-freedom-constitution.md` — the standard the
-  spec is scored against. Each issue's conformance criteria are drawn from it.
+- The documents under `## Authority`, at the sections and articles the issue
+  cites.
 
-Read the spec sections the issue names, and the constitution articles its
-conformance criteria cite. Those are the requirements. The issue body is an
-index into them, not a substitute.
+Those citations are the requirements. The issue body is an index into them, not
+a substitute.
+
+## Authority
+
+- `design/durable-consumer-spec.md` — the accepted specification this repository
+  implements. An issue names the sections it answers to. Amendments land in its
+  section 9, by the maintainer, and never in an implementation slice.
+- `design/constitution/degrees-of-freedom-constitution.md` — the standard the
+  spec is scored against. An issue's **Conformance** section cites the article
+  each criterion answers to.
 
 ## Before you fix
 
@@ -39,9 +45,10 @@ What replaces it is the spec section the issue names and the issue's own
 conformance criteria. A change that passes the tests and violates a criterion
 is not done.
 
-**Never edit `design/durable-consumer-spec.md` or the constitution to make an
-implementation conform.** The spec is the requirement. A change to it is a
-maintainer's decision, so raise it as a blocking question and stop.
+**Never edit the documents under `## Authority` to make an implementation
+conform.** They are the requirement. A change to one is a maintainer's decision,
+taken by the route that heading names, so raise it as a blocking question and
+stop.
 
 That prohibition governs an implementation slice. It does not govern an issue
 whose stated job *is* to amend the spec — those exist, and they say so in the
