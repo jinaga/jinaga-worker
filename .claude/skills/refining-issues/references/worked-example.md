@@ -77,8 +77,9 @@ today by hand. An issue notices this and closes with:
 > - A test reads the timeout from all three and asserts they agree.
 
 The criterion is observable and can fail, so R1 passes. It names an outcome, so
-R2 passes. The drift is real and demonstrated, so R3 passes. It cites Article 2,
-so R4 passes. And it asks for exactly what Article 2 diagnoses.
+R2 passes. The drift is real and demonstrated, so R3 passes. It cites the
+principle its repository holds duplication to, so R4 passes. And it asks for
+exactly what that principle diagnoses.
 
 Three independent variables stand where the problem has one, and the acceptance
 adds a fourth thing to maintain rather than removing two. The remedy is to name
@@ -101,8 +102,8 @@ and closes with:
 Nothing is written twice here. The help text is the only place that fact lives,
 and the issue is right that it belongs there. The criterion is observable, so R1
 passes. It names an outcome, so R2 passes. An operator really did cancel a wait
-and assume the deploy stopped, so R3 passes. Article 2 is cited, correctly, for
-keeping the explanation in one place — so R4 passes.
+and assume the deploy stopped, so R3 passes. The principle about keeping an
+explanation in one place is cited, correctly, so R4 passes.
 
 The test is the second copy, and it arrives with the acceptance. It can go red
 for one reason: somebody rewords the sentence. It cannot notice that cancelling

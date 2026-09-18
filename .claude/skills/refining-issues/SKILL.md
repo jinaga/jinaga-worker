@@ -1,6 +1,6 @@
 ---
 name: refining-issues
-description: Turns a backlog issue in jinaga/jinaga-worker into one that an unattended night-shift agent can implement, and turns a coupled set into a chain that stacks. Use when auditing whether an issue is ready for the `ready` label, when grouping issues for planning, when an issue's acceptance ends in an unmade decision, when two issues must land together, when an issue asks for a test that guards a redundancy rather than removing it or manufactures one by quoting a document, or when a change to the spec has just changed how a set of issues is partitioned. Encodes eight checks — five that decide readiness and three that decide independence — plus the five moves that fix a failed check.
+description: Turns a backlog issue in a night-shift repository into one that an unattended agent can implement, and turns a coupled set into a chain that stacks. Use when auditing whether an issue is ready for the queue label, when grouping issues for planning, when an issue's acceptance ends in an unmade decision, when two issues must land together, when an issue asks for a test that guards a redundancy rather than removing it or manufactures one by quoting a document, or when a change to an authority document has just changed how a set of issues is partitioned. Encodes eight checks — five that decide readiness and three that decide independence — plus the five moves that fix a failed check.
 ---
 
 # Refining issues
@@ -9,11 +9,18 @@ An issue is finished refining when an agent holding no context but the issue
 body can implement it, and when landing it leaves the tree in a state somebody
 would ship.
 
-That is the bar the `ready` label asserts. `.claude/skills/night-shift-worker/SKILL.md`
-is what consumes the label: a scheduled agent reads the issue, the spec sections
-it names and the constitution articles its conformance criteria cite, and works
-it with nobody watching. Refining is what makes that possible. Applying the
-label is the maintainer's call, never yours.
+That is the bar the queue label asserts. `night-shift-worker` is what consumes
+it: a scheduled agent reads the issue, the documents it cites, and works it with
+nobody watching. Refining is what makes that possible. Applying the label is the
+maintainer's call, never yours.
+
+**Read `.night-shift/config.md` before you refine anything.** Three of its
+headings decide how these checks run: `## Issue label` names the queue this
+repository sweeps, `## Authority` names the documents an issue answers to and
+what citing each one means, and `## Before you fix` says what the night shift
+accepts as warrant. A missing required heading is a stop here for the same
+reason it is a stop for the worker — say which one you could not find, and
+refine nothing.
 
 Eight checks decide it. Run R1 to R5 against one issue. Run I1 to I3 across a
 set. Each failed check has one move.
@@ -59,56 +66,67 @@ If the issue claims a caller *cannot* do something, find the mechanism in code
 before you accept the framing.
 
 An issue that opens with a capability gap and then offers directions has often
-not proved the gap. Search the package's own user-facing documentation first —
-`README.md`, `docs/handler-contract.md`, `docs/inherited-constraints.md`,
-`docs/quarantine-pattern.md` — because a capability that exists is usually
-documented there already. Then read `src/`.
+not proved the gap. Search the project's own user-facing documentation first —
+its README and whatever `## Read first` names — because a capability that exists
+is usually documented there already. Then read the source.
 
 A wrong premise does not produce a wrong answer. It produces a correct answer
 to the wrong question, and every direction under it reads as reasonable. The
 cost is a large fix where a small one was needed.
 
-**Two premises are settled here and are not gaps.** Section 9 of
-`design/durable-consumer-spec.md` records the decisions taken after the RFC, and
-section 10.2 records three tensions accepted as compromises. An issue whose
-premise is "the library should not have decided X" or "T2 leaves the language
-open" is arguing with an accepted specification. That is a maintainer's
-question, not a slice: say so and stop. What survives such an issue is whatever
-observable defect it noticed in passing, scoped down to that.
+**A decision already recorded is not a gap.** Where an authority document
+records decisions taken, or tensions accepted as compromises, an issue whose
+premise is "the project should not have decided X" is arguing with that record
+rather than reporting a defect. That is a maintainer's question, not a slice:
+say so and stop. What survives such an issue is whatever observable defect it
+noticed in passing, scoped down to that.
 
 ### R4. Anchor
 
-Does the issue name the spec sections it answers to, and carry conformance
-criteria that cite the constitution?
+Does the issue cite the documents `## Authority` names, in the form that
+heading describes?
 
-The night shift treats the issue body as an index into
-`design/durable-consumer-spec.md` and
-`design/constitution/degrees-of-freedom-constitution.md`, not as a substitute for
-them. An issue that names no section leaves the agent to guess which
-requirement it is implementing, and an issue with no conformance criterion can
-be satisfied by a change that passes every test and still offends an article.
+The night shift treats the issue body as an index into those documents, not as
+a substitute for them. Authority usually comes in two roles, and a repository
+may declare either, both, or neither:
 
-Fail R4 when either is missing. The fix is to read the spec and supply them, not
-to invent a requirement: if no section covers the behavior the issue wants, the
-issue is asking for a spec change, which is section 9's territory and a
-maintainer's decision.
+- **What was decided.** A specification, an accepted design, an RFC. An issue
+  names the sections it answers to. Without them the agent guesses which
+  requirement it is implementing.
+- **What decisions answer to.** A constitution, a set of principles, a review
+  rubric. An issue carries conformance criteria citing the ones each criterion
+  answers to. Without them a change can pass every test and still offend the
+  principle the repository holds itself to.
+
+Fail R4 when the issue omits something `## Authority` requires. The fix is to
+read the document and supply the citation, not to invent a requirement. Where no
+section covers the behavior the issue wants, the issue is asking to amend the
+document — which is the maintainer's decision, by the route `## Authority`
+names, and never an implementation slice's to take.
+
+**Where `## Authority` says `none`, R4 is vacuous. Record it as passed and say
+why.** A repository that holds its issues to no document is a repository where
+this check has nothing to read, which is not the same as an issue that skipped
+it. R5 still runs: it does not depend on R4's documents.
 
 ### R5. Remedy
 
-Does the issue prescribe the remedy its articles prescribe, or a guard over the
-defect they name?
+Does the issue prescribe a remedy that removes the defect, or a guard that
+stands over it?
 
-R4 asks whether the conformance criteria cite an article. R5 asks whether the
-requirement obeys the article it cites. They fail independently: an issue can
-name Article 2 correctly and then ask for precisely what Article 2 diagnoses.
+Where `## Authority` names principles, R5 also asks whether the requirement
+obeys the one the issue cited. That is independent of R4: an issue can cite a
+principle correctly and then ask for precisely what it diagnoses. Where
+`## Authority` says `none`, R5 still runs on the reasoning below, which needs no
+document behind it.
 
-The shape is a value written in more than one place, and an acceptance that
-asks for a test asserting the copies agree. Article 2's diagnostic names "the
-same fact maintained in two places" as the defect itself, and Article 3 answers
-it: "The remedy is not a validation check that rejects the state at runtime. It
-is a representation in which the state cannot be formed." A test over the
-copies leaves every degree of freedom standing and adds one more moving part to
-keep.
+The shape is a value written in more than one place, and an acceptance that asks
+for a test asserting the copies agree. The redundancy is the defect. A test over
+the copies leaves every copy standing, adds one more thing to maintain, and goes
+red only when somebody edits one of them — so it converts a problem you could
+have removed into a problem you now have to keep. The remedy is not a check that
+rejects the disagreement; it is an arrangement in which the copies cannot
+disagree, because there is only one.
 
 Ask which copy is the source of truth, and whether the rest can be derived or
 deleted. When they can, that deletion is the requirement, and the test that
@@ -132,8 +150,9 @@ whose only possible failure is an edit to the text it quotes, even where that
 text is the only copy in the tree. The move is **Remove the freedom** for both,
 though the second form has less to remove.
 
-Run R5 after R4, because it reads the article the issue cites. An issue that
-fails R4 offers nothing to check the requirement against.
+Run R5 after R4 where `## Authority` names principles, because the cited one is
+part of what R5 reads: an issue that fails R4 offers nothing to check the
+requirement against. Where it says `none`, the order does not matter.
 
 ## Independence — run across a set
 
@@ -165,11 +184,11 @@ independent axes into one boolean forces every issue touching it to depend on
 both, whether or not it cares about both. The dependency sits in the code rather
 than in the work.
 
-This is Article 8 seen from the backlog: hand-maintained consistency across two
-sites is one degree of freedom wearing the costume of two, and Part III names
-the ripple it produces as coupling. An issue that fails I2 has found surplus
-freedom in the representation, and saying which article it offends is usually
-the clearest statement of the fix.
+Hand-maintained consistency across two sites is one degree of freedom wearing
+the costume of two, and the ripple it produces is coupling. An issue that fails
+I2 has found surplus freedom in the representation. Where `## Authority` names
+principles, saying which one it offends is usually the clearest statement of the
+fix.
 
 Fail I2 when the issue must wait for a decomposition rather than for a
 behavior.
@@ -195,26 +214,25 @@ serialization is not.
 
 **Extract a decision.** Several issues stalling on "Directions:" or "Decide
 first" are often stalling on one decision in different words. Record it once,
-outside all of them, in a design note under `docs/`. Every issue that depended
+outside all of them, in a design note kept wherever this repository keeps them.
+Every issue that depended
 on it becomes independent with no change to its scope. Answering separately
 produces answers that need not agree. When the decision is one the spec already
 owns — a default, a vocabulary choice, a division of responsibility — the note
-is not yours to write: it is a spec change, and section 9 is where it lands, by
-the maintainer.
+is not yours to write: it is an amendment, and it lands by the route
+`## Authority` names, by the maintainer.
 
 **Remove the freedom.** When R5 fails, name the source of truth and rewrite the
 acceptance as the deletion or derivation of every other copy. The guard the
 issue asked for goes with them: with one statement left there is nothing to
-compare, which is Article 3's validation that "becomes unnecessary because it
-becomes vacuous."
+compare. The guard does not need removing separately; it becomes vacuous.
 
 Write two consequences into the issue. Say that no test asserting agreement is
 to be added, because an agent reaching for evidence will otherwise supply one
 and restore the freedom the issue just removed. And where one of the copies
-lives in `design/durable-consumer-spec.md`, deleting it is a spec amendment, so
-the issue has to declare itself one in its title and its acceptance:
-`.night-shift/config.md` forbids an implementation slice from editing the spec,
-and the night shift stops and asks rather than guessing which kind it holds.
+lives in a document `## Authority` names, deleting it is an amendment, so the
+issue has to declare itself one in its title and its acceptance. The night shift
+stops and asks rather than guessing which kind of issue it holds.
 
 Where the acceptance manufactures the copy rather than guarding one, there is
 nothing to delete and the move is smaller: strike the criterion, or replace it
@@ -257,13 +275,15 @@ or they are not.
 ## Writing the refined issue
 
 Write the title as the defect, then "so", then the consequence. "`start()` has
-no bound, so an unresponsive replicator holds a boot path open."
+no bound, so an unreachable server holds a boot path open."
 
 Body leads with what happened or what the mechanism is, cites the code by path
-and line, and closes with acceptance. The sections this backlog uses, in order:
-the mechanism in prose; **Measured** or **Demonstrated**, showing the behavior
-against a real replicator or `JinagaTest`; **Build** or **Proposal**; **Tests**;
-**Conformance**, naming the article each criterion answers to; **Depends on**.
+and line, and closes with acceptance. A serviceable order: the mechanism in
+prose; **Measured** or **Demonstrated**, showing the behavior against something
+real; **Build** or **Proposal**; **Tests**; **Conformance**, naming what each
+criterion answers to; **Depends on**. Drop **Conformance** where `## Authority`
+says `none` — a heading with nothing to cite is a heading that gets filled in
+with something invented.
 
 Every entry under **Tests** has to be able to fail for a reason other than an
 edit to its own subject. This is the sentence R5 most often catches too late: a
