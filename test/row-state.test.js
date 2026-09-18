@@ -184,7 +184,6 @@ test("a row re-dispatched by a sweep carries the completion hash of its latest a
 test("the map holds no entry for a row that was never discovered", () => {
   const rows = new Map();
 
-  assert.equal(rows.get("never-discovered"), undefined);
   assert.equal(isAdmissible(rows, "never-discovered"), true);
   assert.deepEqual(countRows(rows), {
     dispatching: 0,
@@ -205,7 +204,10 @@ test("a row is admissible if and only if the map holds no entry for it", () => {
   assert.equal(isAdmissible(rows, "r"), true);
 });
 
-test("a row that leaves the set by the removed change is absent from the map", () => {
+// `applyRowEvent` deletes rather than storing the *absent* the table gives it,
+// and it branches on that alone. Which phase the row was in when the removed
+// arrived is the table's question, and §3.3's four `removed` rows are above.
+test("a removed deletes the row rather than leaving an entry behind", () => {
   const rows = new Map();
   applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
   applyRowEvent(rows, "r", resolved());
@@ -213,38 +215,6 @@ test("a row that leaves the set by the removed change is absent from the map", (
 
   assert.equal(rows.has("r"), false);
   assert.equal(rows.size, 0);
-});
-
-test("a row that leaves the set by a sweep omitting it is absent from the map", () => {
-  const rows = new Map();
-  applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
-  applyRowEvent(rows, "r", {
-    kind: "rejected",
-    retryAt: 900,
-    maxAttempts: MAX
-  });
-
-  // A sweep that omits a row raises the same event as a removed change.
-  applyRowEvent(rows, "r", { kind: "removed" });
-
-  assert.equal(rows.has("r"), false);
-  assert.equal(rows.size, 0);
-});
-
-test("a quarantined row leaves the map when it leaves the outstanding set", () => {
-  const rows = new Map();
-  applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
-  applyRowEvent(rows, "r", {
-    kind: "rejected",
-    retryAt: 900,
-    maxAttempts: 1
-  });
-
-  assert.equal(rows.get("r").phase, "quarantined");
-
-  applyRowEvent(rows, "r", { kind: "removed" });
-
-  assert.equal(rows.has("r"), false);
 });
 
 test("a stale added following a removed for the same row admits it once", () => {

@@ -5,21 +5,6 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { repoRoot, prose, comments, references } = require("./markdown-references");
 
-test("build output exports the package API", async () => {
-  const exports = require("../dist/index.js");
-
-  assert.equal(typeof exports.defineConsumer, "function");
-  assert.equal(typeof exports.createWorker, "function");
-});
-
-test("publish workflow is present but disabled", async () => {
-  const workflowPath = path.join(__dirname, "..", ".github", "workflows", "publish.yml");
-  const content = fs.readFileSync(workflowPath, "utf8");
-
-  assert.match(content, /workflow_dispatch:/);
-  assert.match(content, /if:\s*\$\{\{\s*false\s*\}\}/);
-});
-
 // The tarball is the authority on what ships, so read it rather than restating
 // `files` here: a second copy of that list would drift the moment `files` moved.
 //

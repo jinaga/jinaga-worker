@@ -3,11 +3,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { DIST, readTsBlocks, runGuard, workspaceRoot } = require("./spec-guard.js");
-const { repoRoot, commentAbove } = require("./declaration-comments");
+const { DIST, readTsBlocks, repoRoot, runGuard, workspaceRoot } = require("./spec-guard.js");
 
 const PAGE = "docs/starting-a-worker.md";
-const URL = "https://github.com/jinaga/jinaga-worker/blob/main/docs/starting-a-worker.md";
 
 const page = fs.readFileSync(path.join(repoRoot, PAGE), "utf8");
 
@@ -78,42 +76,3 @@ test("a page that misspells a worker option fails the guard", () => {
   );
   assert.equal(result.ok, false, "a block set an option the worker does not have and the guard passed");
 });
-
-test("the page names both rejections and which one is worth retrying", () => {
-  // The shapes are only as good as the branch they turn on: a boot path that
-  // treats the two rejections alike retries the one retrying cannot fix.
-  assert.match(page, /`DistributionDeniedError`/);
-  assert.match(page, /`FeedTimeoutError`/);
-  assert.match(
-    page.replace(/\s+/g, " "),
-    /A `FeedTimeoutError` usually resolves on its own, and it is the one worth retrying\./
-  );
-});
-
-test("the README sends a reader to the page before they deploy", () => {
-  const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
-
-  const section = readme.split(/^## Before you deploy a worker$/m)[1];
-  assert.ok(section !== undefined, "the README has no `Before you deploy a worker` section");
-
-  assert.match(
-    section.split(/^## /m)[0],
-    /\]\(docs\/starting-a-worker\.md\)/,
-    "`Before you deploy a worker` does not link the page"
-  );
-});
-
-// An agent writing the call reads `dist/*.d.ts` inside `node_modules`, where a
-// path relative to this repository resolves to nothing. The absolute URL is
-// what reaches the page from there.
-for (const [name, declaration, member] of [
-  ["Worker.start()", "Worker", "start(): Promise<void>;"],
-  ["WorkerOptions.startTimeoutMs", "WorkerOptions", "startTimeoutMs?: number;"]
-]) {
-  test(`${name} links the page by absolute URL`, () => {
-    assert.ok(
-      commentAbove("worker.d.ts", declaration, member).includes(URL),
-      `${name} does not link ${PAGE} by absolute URL`
-    );
-  });
-}

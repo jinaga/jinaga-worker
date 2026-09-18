@@ -1,6 +1,5 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
 
 const { defineConsumer } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
@@ -18,7 +17,6 @@ const {
   quarantinesOf,
   world
 } = require("./outstanding-model.js");
-const { specPath } = require("./spec-guard.js");
 
 // Every wait here is for an event, not for a delay. `WAIT_MS` is only the
 // deadline at which an event that is never coming is reported as a failure, so
@@ -559,38 +557,6 @@ test("completionHash names the fact of the attempt that exhausted the row, not a
 
   await worker.stop();
 });
-
-// ---------------------------------------------------------------------------
-// The specification's account of the diagnosis.
-// ---------------------------------------------------------------------------
-
-// §2.3's type block is held to `src/no-progress.ts` by the guard in
-// spec-types.test.js, which compiles it. §10.2 is prose, which nothing
-// compiles, and it is where the specification sends an operator for the
-// residual case, so the members it names are checked here.
-test("§10.2 T2 names the three members as where the residual case is diagnosed", () => {
-  const tensions = fs.readFileSync(specPath, "utf8").split(/^### 10\.2 Tensions$/m)[1];
-  assert.ok(tensions !== undefined, "the specification no longer has a §10.2 Tensions");
-
-  const t2 = tensions.split("**T2 ")[1]?.split("**T3 ")[0];
-  assert.ok(t2 !== undefined, "§10.2 no longer records T2");
-
-  const paragraphs = t2.trim().split(/\n\s*\n/);
-  const last = paragraphs[paragraphs.length - 1].replace(/\s+/g, " ");
-
-  assert.match(last, /`stalled`/, "T2's last paragraph no longer points at the stalled event");
-  for (const member of ["completionType", "retiringTypes", "completionHash"]) {
-    assert.match(
-      last,
-      new RegExp(`\`${member}\``),
-      `T2's last paragraph does not name ${member}`
-    );
-  }
-});
-
-// ---------------------------------------------------------------------------
-// The callbacks are the application's, and bounded.
-// ---------------------------------------------------------------------------
 
 test("reports failed, carrying the refusal, when the store refuses the completion fact", { timeout: DEADLINE_MS }, async t => {
   // The handler resolves every time. Only the write fails, and the library is

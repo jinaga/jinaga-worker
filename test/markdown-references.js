@@ -15,6 +15,11 @@ const repoRoot = path.join(__dirname, "..");
 const LINK = /\[[^\]]*\]\(([^)\s]+)\)/g;
 const BACKTICKED = /`([^`\s]+)`/g;
 
+// A page that travels with the package reaches the rest of the tree by absolute
+// URL, so the path inside one is a path into this repository all the same.
+const REPOSITORY_URL =
+  /https:\/\/github\.com\/jinaga\/jinaga-worker\/(?:blob|tree)\/[^/\s)]+\/([^\s)`"'\]]+)/g;
+
 const topLevel = new Set(fs.readdirSync(repoRoot));
 
 // A fenced or quoted line carries example material, so the paths in it name
@@ -66,4 +71,17 @@ function references(content) {
   return found;
 }
 
-module.exports = { repoRoot, prose, comments, references };
+/**
+ * The repository-relative path inside every absolute URL `content` writes into
+ * this repository, with any anchor dropped.
+ *
+ * `references` answers what has to resolve inside the installed package.
+ * This answers what has to resolve in the tree, which is the other half: a
+ * `.d.ts` an agent reads out of `node_modules` reaches `design/` only by URL,
+ * and a URL keeps pointing at the old path after a page moves.
+ */
+function repositoryUrls(content) {
+  return [...content.matchAll(REPOSITORY_URL)].map((match) => match[1].split("#")[0]);
+}
+
+module.exports = { repoRoot, prose, comments, references, repositoryUrls };
