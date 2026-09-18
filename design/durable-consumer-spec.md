@@ -12,7 +12,7 @@ Requires `jinaga` at or above the floor of the peer dependency range
 [#250][250] and the bounded subscribe from [#282][282].
 
 Every structure here is answerable to
-[the constitution](constitution/degrees-of-freedom-constitution.md). Section 10
+[the constitution](../.claude/skills/degrees-of-freedom/degrees-of-freedom-constitution.md). Section 10
 records the evaluation and the compromises.
 
 [251]: https://github.com/jinaga/jinaga.js/issues/251
@@ -763,7 +763,7 @@ Settled after the RFC, in the order they were taken:
 ## 10. Constitutional conformance
 
 Scored against
-[Part IV](constitution/degrees-of-freedom-constitution.md#part-iv-evaluation-procedure).
+[Part IV](../.claude/skills/degrees-of-freedom/degrees-of-freedom-constitution.md#part-iv-evaluation-procedure).
 Three tensions remain, recorded as compromises rather than left to be
 rediscovered.
 

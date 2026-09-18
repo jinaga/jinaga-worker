@@ -31,9 +31,9 @@ a substitute.
 - `design/durable-consumer-spec.md` — the accepted specification this repository
   implements. An issue names the sections it answers to. Amendments land in its
   section 9, by the maintainer, and never in an implementation slice.
-- `design/constitution/degrees-of-freedom-constitution.md` — the standard the
-  spec is scored against. An issue's **Conformance** section cites the article
-  each criterion answers to.
+- `.claude/skills/degrees-of-freedom/degrees-of-freedom-constitution.md` — the
+  standard the spec is scored against. An issue's **Conformance** section cites
+  the article each criterion answers to.
 
 ## Before you fix
 
