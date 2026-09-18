@@ -24,6 +24,37 @@ function flatten(content) {
 }
 
 /**
+ * Everything after the brace that opens `declaration`'s body, or `undefined`
+ * when the file declares no such interface or class.
+ *
+ * The brace is found by scanning rather than by matching a fixed header,
+ * because a generic carries braces among its type parameters: the `{` in
+ * `ConsumerOptions<..., C extends { type: string; }, ...>` opens and closes
+ * before the declaration's own body begins. Angle-bracket depth is what tells
+ * the two apart.
+ */
+function opens(content, declaration) {
+  const named = new RegExp(`\\b(?:interface|class) ${declaration}\\b`).exec(content);
+  if (named === null) {
+    return undefined;
+  }
+
+  let angles = 0;
+  for (let at = named.index + named[0].length; at < content.length; at++) {
+    const character = content[at];
+    if (character === "<") {
+      angles += 1;
+    } else if (character === ">" && angles > 0) {
+      angles -= 1;
+    } else if (character === "{" && angles === 0) {
+      return content.slice(at + 1);
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * The comment immediately above `member` inside `declaration`, in `dist/<file>`.
  *
  * Adjacency is what makes the comment that member's own. Reading everything
@@ -36,7 +67,7 @@ function flatten(content) {
 function commentAbove(file, declaration, member) {
   const declarations = fs.readFileSync(path.join(repoRoot, "dist", file), "utf8");
 
-  const inside = declarations.split(new RegExp(`\\b(?:interface|class) ${declaration} \\{`))[1];
+  const inside = opens(declarations, declaration);
   assert.ok(inside !== undefined, `dist/${file} declares no ${declaration}`);
 
   const body = inside.split(/^\}/m)[0];

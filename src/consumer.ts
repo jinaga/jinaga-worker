@@ -65,6 +65,11 @@ export interface ConsumerOptions<
     /**
      * The specification's givens, as a tuple. Its type is the specification's
      * own `T`, so passing too few is a compile error.
+     *
+     * The given must be byte-stable across restarts. One that differs by a
+     * field after a restart leaves the consumer silently empty rather than
+     * failing, so compare the given hash each consumer logs at start. See
+     * [the inherited constraints](../docs/inherited-constraints.md).
      */
     givens: T;
 
@@ -79,6 +84,10 @@ export interface ConsumerOptions<
     /**
      * What the consumer does with a row, ending in the completion fact that
      * takes the row out of the outstanding set. The library asserts it.
+     *
+     * One call is one attempt, and failure is a rejection. Retrying belongs to
+     * the consumer's `retry`, so the handler keeps none of its own. See
+     * [the handler contract](../docs/handler-contract.md).
      */
     handle: (row: SpecificationRow<U>) => Promise<C>;
 

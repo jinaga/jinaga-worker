@@ -105,11 +105,19 @@ So make the handler safe to run twice:
 
 ## Rejection
 
-A rejected promise and a thrown exception are the same failure, and a handler
-that exceeds `handlerTimeoutMs` is a rejection too. Each one spends an attempt
-and schedules the next one from the consumer's `RetryPolicy`. After
-`maxAttempts` rejections the row is quarantined and the worker emits a `failed`
-event. See [the quarantine pattern](quarantine-pattern.md).
+One call of your handler is one attempt. A rejected promise and a thrown
+exception are the same failure, and a handler that exceeds `handlerTimeoutMs`
+is a rejection too. Each one spends an attempt and schedules the next one from
+the consumer's `RetryPolicy`. After `maxAttempts` rejections the row is
+quarantined and the worker emits a `failed` event. See
+[the quarantine pattern](quarantine-pattern.md).
+
+So the handler keeps no retry of its own. One that catches its own failures and
+tries again before it settles reports every one of those tries as a single
+attempt: `attempts` stops counting what the loop tried, and the wall-clock
+budget `maxAttempts` sets is spent long after the operator who configured it
+expects. The retry policy is the consumer's `retry`, and a handler carrying its
+own competes with it.
 
 ## Where the handler runs
 
