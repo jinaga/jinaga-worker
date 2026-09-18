@@ -1,6 +1,6 @@
 ---
 name: refining-issues
-description: Turns a backlog issue in jinaga/jinaga-worker into one that an unattended night-shift agent can implement, and turns a coupled set into a chain that stacks. Use when auditing whether an issue is ready for the `ready` label, when grouping issues for planning, when an issue's acceptance ends in an unmade decision, when two issues must land together, when an issue asks for a test that guards a redundancy rather than removing it, or when a change to the spec has just changed how a set of issues is partitioned. Encodes eight checks — five that decide readiness and three that decide independence — plus the five moves that fix a failed check.
+description: Turns a backlog issue in jinaga/jinaga-worker into one that an unattended night-shift agent can implement, and turns a coupled set into a chain that stacks. Use when auditing whether an issue is ready for the `ready` label, when grouping issues for planning, when an issue's acceptance ends in an unmade decision, when two issues must land together, when an issue asks for a test that guards a redundancy rather than removing it or manufactures one by quoting a document, or when a change to the spec has just changed how a set of issues is partitioned. Encodes eight checks — five that decide readiness and three that decide independence — plus the five moves that fix a failed check.
 ---
 
 # Refining issues
@@ -31,6 +31,12 @@ Does the issue state acceptance criteria, and can each one fail a test?
 A criterion names an observable change. "A consumer whose sweeps fail reports a
 rising `sweepFailures`, reset to 0 by one successful pass" is a criterion. "Add
 sweep failure reporting to `status()`" is a task.
+
+"Can fail a test" means the test can go red for a reason other than an edit to
+the criterion's own subject. A criterion naming a sentence in a document — "the
+page says X", "the comment names Y" — is observable, and a test over it passes
+this reading of R1 while proving nothing. R1 still passes it: the defect is not
+that the criterion is unobservable. R5 is where it fails.
 
 Fail R1 when the acceptance section is absent, or when it is a checkbox list of
 work items, or when a bullet reads "resolved by a decision about X". That last
@@ -108,9 +114,23 @@ Ask which copy is the source of truth, and whether the rest can be derived or
 deleted. When they can, that deletion is the requirement, and the test that
 would have guarded them has nothing left to compare.
 
+**The shape has a second form, and it is the one that slips through.** Sometimes
+the fact is written in exactly one place, and the acceptance creates the second
+copy by quoting it: "the comment names byte-stability", "the page names both
+rejection types", "`README.md` links it from its deployment section". No
+pre-existing redundancy exists to point at, so the first form does not match.
+The redundancy arrives with the test.
+
+Both forms answer one question: what could this test go red for? When the answer
+is "somebody reworded the thing it quotes", the acceptance is a copy — whether
+it guards a redundancy that was already there or manufactures one that was not.
+
 Fail R5 when the acceptance's subject is agreement between two representations
 of one fact — a runtime validation, a lint, a CI step, or a test — rather than
-the removal of one of them. The move is **Remove the freedom**.
+the removal of one of them. Fail it too when the acceptance asks for a test
+whose only possible failure is an edit to the text it quotes, even where that
+text is the only copy in the tree. The move is **Remove the freedom** for both,
+though the second form has less to remove.
 
 Run R5 after R4, because it reads the article the issue cites. An issue that
 fails R4 offers nothing to check the requirement against.
@@ -196,6 +216,19 @@ the issue has to declare itself one in its title and its acceptance:
 `.night-shift/config.md` forbids an implementation slice from editing the spec,
 and the night shift stops and asks rather than guessing which kind it holds.
 
+Where the acceptance manufactures the copy rather than guarding one, there is
+nothing to delete and the move is smaller: strike the criterion, or replace it
+with one that derives. A derived criterion names something the *code* can
+falsify — a documented example that compiles against the shipped build, a
+documented path that resolves against the filesystem, a default read back out of
+the object the factory built. Each fails when the code changes, which is the
+failure a document cannot produce on its own.
+
+Where nothing derives, say so in the issue: the documentation stands on review,
+and no test is to be added. That sentence is load-bearing for the same reason it
+is in the first form. An agent held to a regression test, reading an acceptance
+that names a sentence, will quote the sentence back.
+
 **Decompose the axis.** When I2 fails, the fix belongs to whichever issue owns
 the separation rather than to the issue that noticed it. Decomposing the predicate is
 what makes the other issues perpendicular, so it is scope for the owner rather
@@ -231,6 +264,12 @@ and line, and closes with acceptance. The sections this backlog uses, in order:
 the mechanism in prose; **Measured** or **Demonstrated**, showing the behavior
 against a real replicator or `JinagaTest`; **Build** or **Proposal**; **Tests**;
 **Conformance**, naming the article each criterion answers to; **Depends on**.
+
+Every entry under **Tests** has to be able to fail for a reason other than an
+edit to its own subject. This is the sentence R5 most often catches too late: a
+documentation slice feels like it needs a test, a quotation is the only one
+available, and writing it here is what puts it in the suite. The night shift
+implements the acceptance it is given.
 
 Name the interaction with any issue that shares an invariant, and say which one
 must not reopen the gap.

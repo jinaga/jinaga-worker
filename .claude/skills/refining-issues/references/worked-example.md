@@ -89,6 +89,35 @@ no test has anything left to compare.
 **The shape:** an acceptance whose subject is agreement between copies. The
 issue has found surplus freedom and asked for a guard to stand over it.
 
+## R5 Remedy — a copy the acceptance creates
+
+`promote --wait` blocks until the deploy settles, and its help text does not say
+that cancelling the wait leaves the deploy running. An issue adds the sentence
+and closes with:
+
+> - `promote --wait`'s help text says that cancelling the wait does not cancel
+>   the deploy.
+
+Nothing is written twice here. The help text is the only place that fact lives,
+and the issue is right that it belongs there. The criterion is observable, so R1
+passes. It names an outcome, so R2 passes. An operator really did cancel a wait
+and assume the deploy stopped, so R3 passes. Article 2 is cited, correctly, for
+keeping the explanation in one place — so R4 passes.
+
+The test is the second copy, and it arrives with the acceptance. It can go red
+for one reason: somebody rewords the sentence. It cannot notice that cancelling
+now *does* cancel the deploy, which is the only thing worth knowing. It freezes
+the wording and leaves the behavior unguarded.
+
+What derives here is the flag, not the sentence. A check that every flag the
+parser registers appears in `--help`, and that nothing else does, fails when
+somebody adds or renames a flag without documenting it — a failure the code
+produces. The cancellation sentence stands on review.
+
+**The shape:** an acceptance that quotes a document back to itself. The first
+form guards a redundancy that exists; this one manufactures one that did not,
+which is why reading for surplus freedom does not find it.
+
 ## I1 Reference — a shared invariant across no shared file
 
 Issue A adds an authorization check to the deploy API route. Issue B removes an
@@ -186,7 +215,9 @@ separately, they produce four answers that need not agree.
 
 Every shape here was found in a real backlog audit of `jinaga/factual-mcp` in
 September 2026, across issues 351, 373, 377, 404, 405, 406, 412, 415, and 416.
-The R5 shape came from `jinaga/jinaga-worker`#52 in the same month.
+The R5 shapes came from `jinaga/jinaga-worker`: the first from #52 in the same
+month, the second from #19, #22 and #39, whose acceptance sections each asked
+for a test quoting a document back to itself and got one.
 
 The real cases are not reproduced, for two reasons. They carry domain
 vocabulary that costs a reader more than the shape is worth. And each one
