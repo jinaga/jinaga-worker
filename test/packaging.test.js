@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { repoRoot, prose, references } = require("./markdown-references");
+const { repoRoot, prose, comments, references } = require("./markdown-references");
 
 test("build output exports the package API", async () => {
   const exports = require("../dist/index.js");
@@ -41,25 +41,100 @@ function shippedFiles() {
   return new Set(tarball.files.map((file) => file.path.replace(/^package\//, "")));
 }
 
-test("README.md names only paths the installed package carries", () => {
-  const shipped = shippedFiles();
-  const content = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
+// Every file under `dir`, repo-relative, so the pack listing can be asked about
+// each one by name rather than about the folder.
+function filesUnder(dir) {
+  return fs
+    .readdirSync(path.join(repoRoot, dir), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.relative(repoRoot, path.join(entry.parentPath, entry.name)));
+}
 
-  // `docs/` reaches the tarball under #18. Until then it is the one folder the
-  // README may name that the pack listing does not yet report.
-  const carried = (target) => shipped.has(target) || target.startsWith("docs/");
-
+// The paths `file` names that the tarball does not carry, taking `content` as
+// the file's text rather than reading it, so the rule can be asked about a file
+// that does not exist.
+//
+// A Markdown link is written from the file that holds it and a backticked path
+// from the package root, which is the distinction `references` already draws.
+function unreachablePaths(shipped, file, content) {
+  const text = file.endsWith(".md") ? prose(content) : comments(content);
   const unreachable = [];
-  for (const { target } of references(prose(content))) {
+
+  for (const { target, fromRoot } of references(text)) {
     const targetPath = target.split("#")[0];
     if (targetPath.length === 0) {
       continue;
     }
-    const fromRoot = path.relative(repoRoot, path.resolve(repoRoot, targetPath));
-    if (!carried(fromRoot)) {
-      unreachable.push(target);
+    const base = fromRoot ? repoRoot : path.dirname(path.join(repoRoot, file));
+    if (!shipped.has(path.relative(repoRoot, path.resolve(base, targetPath)))) {
+      unreachable.push(`${file} -> ${target}`);
     }
   }
 
+  return unreachable;
+}
+
+test("the tarball carries the library and its documentation, and nothing else", () => {
+  const shipped = shippedFiles();
+
+  assert.ok(shipped.has("README.md"));
+  assert.ok(shipped.has("LICENSE"));
+  assert.ok([...shipped].some((file) => file.startsWith("dist/")));
+
+  const repositoryOnly = [...shipped].filter((file) =>
+    /^(src|test|design|\.github)\//.test(file)
+  );
+  assert.deepEqual(repositoryOnly, []);
+});
+
+test("every file under docs/ ships", () => {
+  const shipped = shippedFiles();
+
+  assert.deepEqual(filesUnder("docs").filter((file) => !shipped.has(file)), []);
+});
+
+test("every shipped file names only paths the installed package carries", () => {
+  const shipped = shippedFiles();
+  const unreachable = [];
+
+  for (const file of shipped) {
+    if (!file.endsWith(".md") && !file.endsWith(".d.ts")) {
+      continue;
+    }
+    const content = fs.readFileSync(path.join(repoRoot, file), "utf8");
+    unreachable.push(...unreachablePaths(shipped, file, content));
+  }
+
   assert.deepEqual(unreachable, []);
+});
+
+test("a shipped page reaching into the design record is reported", () => {
+  const shipped = shippedFiles();
+
+  assert.deepEqual(
+    unreachablePaths(
+      shipped,
+      "docs/example.md",
+      "[the specification](../design/durable-consumer-spec.md)\n"
+    ),
+    ["docs/example.md -> ../design/durable-consumer-spec.md"]
+  );
+});
+
+test("the package name resolves to the entry point under both module systems", () => {
+  assert.equal(require.resolve("jinaga-worker"), path.join(repoRoot, "dist", "index.js"));
+
+  const resolved = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", "process.stdout.write(import.meta.resolve('jinaga-worker'))"],
+    { cwd: repoRoot, encoding: "utf8" }
+  );
+  assert.equal(resolved, new URL(`file://${path.join(repoRoot, "dist", "index.js")}`).href);
+});
+
+test("the interior of dist/ is not importable", () => {
+  assert.throws(
+    () => require("jinaga-worker/dist/consumer"),
+    (error) => error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED"
+  );
 });
