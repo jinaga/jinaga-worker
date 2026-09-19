@@ -17,6 +17,77 @@ a fixed set of them.
 - **Non-progress.** A row that runs out of attempts is quarantined and reported
   once through `onNoProgress`, as `failed` or as `stalled`.
 
+## Install
+
+```
+npm install jinaga-worker jinaga
+```
+
+`jinaga` is a peer dependency: the worker runs against the `Jinaga` instance
+your application already holds, so the application chooses its version.
+
+## Usage
+
+A consumer mirrors each invitation somewhere outside the fact graph. Its
+specification is the invitations with no `InvitationMirrored` yet, and its
+handler returns that fact, which the library asserts to take the row out of the
+set.
+
+```ts
+import { buildModel, Jinaga } from "jinaga";
+import { createWorker, defineConsumer, Worker } from "jinaga-worker";
+
+class Tenant {
+    static Type = "Blog.Tenant" as const;
+    type = Tenant.Type;
+    constructor(public identifier: string) {}
+}
+
+class Invitation {
+    static Type = "Blog.Invitation" as const;
+    type = Invitation.Type;
+    constructor(public tenant: Tenant, public email: string) {}
+}
+
+class InvitationMirrored {
+    static Type = "Blog.Invitation.Mirrored" as const;
+    type = InvitationMirrored.Type;
+    constructor(public invitation: Invitation) {}
+}
+
+const model = buildModel(b => b
+    .type(Tenant)
+    .type(Invitation, f => f.predecessor("tenant", Tenant))
+    .type(InvitationMirrored, f => f.predecessor("invitation", Invitation)));
+
+const outstandingInvitations = model.given(Tenant).match((tenant, facts) =>
+    facts.ofType(Invitation)
+        .join(invitation => invitation.tenant, tenant)
+        .notExists(invitation => facts.ofType(InvitationMirrored)
+            .join(mirrored => mirrored.invitation, invitation)));
+
+const invitations = defineConsumer({
+    name: "invitation-mirror",
+    specification: outstandingInvitations,
+    givens: [new Tenant("acme")],
+    completes: InvitationMirrored,
+    handle: async row => {
+        await mirror(row.result);
+        return new InvitationMirrored(row.result);
+    }
+});
+
+export async function startWorker(j: Jinaga): Promise<Worker> {
+    const worker = createWorker(j, { consumers: [invitations] });
+    await worker.start();
+    return worker;
+}
+```
+
+`mirror` is your side effect, and it may run more than once for the same
+invitation. The pages below say why, and what the boot path around `start()`
+should do when it rejects.
+
 ## Before you deploy a worker
 
 - [The handler contract](docs/handler-contract.md): what `handle` is promised,

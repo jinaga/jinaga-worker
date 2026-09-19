@@ -367,6 +367,27 @@ function runGuard(blocks, { directory, dist }) {
     return compileGuard(directory);
 }
 
+/**
+ * Compile every `ts` block of a user-facing page, each standing on `preamble`.
+ *
+ * A page recommends code rather than publishing types, so its blocks carry no
+ * declarations to compare: the page's surroundings — the process, the log, the
+ * reader's own side effects — go in the preamble, and the blocks show only the
+ * code the reader writes. `text` defaults to the page on disk, and a caller
+ * passes its own to ask about a page that does not exist.
+ */
+function guardPage(page, { preamble, name, text = fs.readFileSync(path.join(repoRoot, page), "utf8") }) {
+    const blocks = readTsBlocks(text.split("\n"), { origin: page, section: name })
+        .map(block => ({ ...block, entry: { preamble, compares: {}, local: {} } }));
+    if (blocks.length === 0) {
+        return { ok: false, output: `${page} carries no ts block to compile` };
+    }
+    return runGuard(blocks, {
+        directory: path.join(workspaceRoot, name),
+        dist: "../../../dist/index"
+    });
+}
+
 module.exports = {
     BLOCKS,
     DIST,
@@ -375,6 +396,7 @@ module.exports = {
     declaredNames,
     doublyDisposedBlocks,
     fileNameFor,
+    guardPage,
     guardSource,
     isIllustration,
     normalize,

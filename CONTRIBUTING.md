@@ -25,9 +25,15 @@ floor is the release carrying the row-stream seam — `queryRows` and
 
 Run `npm ci && npm test`. `npm test` builds first, so it is the whole bar on a
 fresh clone, and it is what `.github/workflows/ci.yml` runs on a pull request.
-`.github/workflows/publish.yml` holds the publish gate.
 
 Two rules from jinaga.js's `contributing.md` apply to the tests here: no
 arbitrary timeouts, and test at the level of the mechanism. A green end-to-end
 run does not establish that a feed decomposition or a distribution rule works
 against a real replicator.
+
+## Releasing
+
+A release is a manual run of `.github/workflows/publish.yml`. Set `version` in
+`package.json` on `main`, then run the workflow from the Actions tab. It runs
+`npm test` before `npm publish`, and it authenticates through npm trusted
+publishing, so the repository stores no npm token.

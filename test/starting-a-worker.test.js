@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { DIST, readTsBlocks, repoRoot, runGuard, workspaceRoot } = require("./spec-guard.js");
+const { DIST, guardPage, repoRoot } = require("./spec-guard.js");
 
 const PAGE = "docs/starting-a-worker.md";
 
@@ -37,18 +37,8 @@ const PREAMBLE =
   `};\n` +
   `declare function delay(ms: number): Promise<void>;\n`;
 
-/** Every block on the page, each standing on the same preamble. */
-function pageBlocks(text) {
-  return readTsBlocks(text.split("\n"), { origin: PAGE, section: "starting-a-worker" }).map(
-    (block) => ({ ...block, entry: { preamble: PREAMBLE, compares: {}, local: {} } })
-  );
-}
-
 function guardIn(name, text = page) {
-  return runGuard(pageBlocks(text), {
-    directory: path.join(workspaceRoot, name),
-    dist: "../../../dist/index"
-  });
+  return guardPage(PAGE, { preamble: PREAMBLE, name, text });
 }
 
 test("the page's boot paths compile against the shipped types", () => {
@@ -56,8 +46,6 @@ test("the page's boot paths compile against the shipped types", () => {
   // do, and it goes stale in the reader's editor rather than in a document
   // nobody compiles. Every block is compiled: the page has no illustrations,
   // because a shape a caller cannot paste is not a recommendation.
-  assert.ok(pageBlocks(page).length > 0, `${PAGE} carries no ts block to compile`);
-
   const result = guardIn("starting-a-worker");
   assert.ok(result.ok, `${PAGE} has drifted from dist/:\n${result.output}`);
 });
