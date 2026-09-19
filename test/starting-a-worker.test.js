@@ -53,9 +53,9 @@ test("the page's boot paths compile against the shipped types", () => {
 // The guard has to fail from the page's side, or a page of shapes that no
 // longer typecheck would compile forever on the strength of its preamble alone.
 test("a page that misspells a worker option fails the guard", () => {
-  const result = guardIn(
-    "starting-a-worker-mutation",
-    page.replace("startTimeoutMs: 30_000", "startTimeoutMS: 30_000")
-  );
+  const mutated = page.replace("startTimeoutMs: 30_000", "startTimeoutMS: 30_000");
+  assert.notEqual(mutated, page, "the mutation matched nothing on the page");
+
+  const result = guardIn("starting-a-worker-mutation", mutated);
   assert.equal(result.ok, false, "a misspelled worker option compiled");
 });

@@ -30,9 +30,9 @@ test("the README's usage compiles against the shipped types", () => {
 // The guard has to fail from the page's side, or a usage block that no longer
 // typechecks would compile forever on the strength of its preamble alone.
 test("a README that misspells a consumer option fails the guard", () => {
-  const result = guardIn(
-    "readme-mutation",
-    page.replace("completes: InvitationMirrored", "complete: InvitationMirrored")
-  );
+  const mutated = page.replace("completes: InvitationMirrored", "complete: InvitationMirrored");
+  assert.notEqual(mutated, page, "the mutation matched nothing on the page");
+
+  const result = guardIn("readme-mutation", mutated);
   assert.equal(result.ok, false, "a misspelled consumer option compiled");
 });
