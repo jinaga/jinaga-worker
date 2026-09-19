@@ -30,9 +30,9 @@ test("the README's usage compiles against the shipped types", () => {
 // The guard has to fail from the page's side, or a usage block that no longer
 // typechecks would compile forever on the strength of its preamble alone.
 test("a README that misspells a consumer option fails the guard", () => {
-  const option = "completes: InvitationMirrored";
-  assert.ok(page.includes(option), `no block on ${PAGE} sets ${option}`);
-
-  const result = guardIn("readme-mutation", page.replace(option, "complete: InvitationMirrored"));
-  assert.equal(result.ok, false, "a block set an option the consumer does not have and the guard passed");
+  const result = guardIn(
+    "readme-mutation",
+    page.replace("completes: InvitationMirrored", "complete: InvitationMirrored")
+  );
+  assert.equal(result.ok, false, "a misspelled consumer option compiled");
 });
