@@ -247,6 +247,7 @@ export interface ConsumerStatus {
     completed: number;
     quarantined: number;
     dropped: number;               // RowStream.dropped — read through, never copied
+    sweepInFlight?: { since: Date };
     sweepFailures: number;         // failed passes since the last successful one
     lastSweep?: { at: Date; size: number };
     lastSweepFailure?: { at: Date; error: unknown };
@@ -267,6 +268,13 @@ the state it describes (Art. 2). The sweep fields are primitive state instead:
 the map records phases of rows and says nothing about the passes that offered
 them, so neither a consecutive-failure count nor the last failure is derivable
 from it (§10.1, row 2).
+
+`sweepInFlight` names the pass that has not settled yet, which is what the other
+two sweep fields cannot say: each reports a pass that has ended, so a read still
+in flight leaves both of them as old as itself. One optional carries the start,
+because a pending pass without a start is not a state the problem contains, and
+it is separate from the other two because a consumer can have a pass pending and
+either, both or neither of them (Art. 3).
 
 `lastSweep` is one optional, because an `at` without a `size` is not a state the
 problem contains. `lastSweepFailure` is a second optional beside it rather than
@@ -365,8 +373,9 @@ Two paths, one execution path, deduplicated on `rowHash`:
 
 - **The stream** — `operation: "added"` offers a row; `operation: "removed"`
   retracts one.
-- **The sweep** — `queryRows` every `sweepIntervalMs`, offering every row it
-  returns.
+- **The sweep** — `queryRows`, at most one pass at a time, attempted every
+  `sweepIntervalMs`, offering every row it returns. A tick that finds a pass
+  pending skips, and the first tick after that pass settles reads again.
 
 Neither executes anything. Both funnel into one admission gate.
 
@@ -375,6 +384,10 @@ series. It is counted, and the failure kept, because the row counts cannot show
 it: a backstop that has stopped recovering anything looks from the map exactly
 like one with nothing to recover. `status()` reports both (§2.4). A pass whose
 read outlives discovery is neither: it offers nothing and it reports nothing.
+
+Both of those fields report a pass that has ended, so a pass still reading is in
+neither. `status()` names it while it reads, and the age an operator reads off it
+is the age of that read (§2.4).
 
 ### 3.3 Row state
 
@@ -699,6 +712,8 @@ reverted:
 - `stop()` drains settled handlers and reports the abandoned count
 - a timed-out handler counts as a rejection, not as progress
 - counts consecutive sweep failures, keeps the last one beside the last successful pass, and clears the count on the next success
+- starts no second pass while one is pending, and reads again on the first tick after it settles
+- reports the pending pass's start while it reads, and nothing once it settles either way
 - `status()` counts agree with the row-state map after every transition above
 
 The last one is the constitution's Article 2 as an executable check: if a count
@@ -772,7 +787,7 @@ rediscovered.
 | # | Question | Verdict |
 | --- | --- | --- |
 | 1 | Can I represent a state I would then have to forbid? | No. |
-| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` row count is tallied from the row-state map on call, and `dropped` is read through to `RowStream`. `sweepFailures` and `lastSweepFailure` are stored because they are primitive: the map holds phases of rows, not the passes that offered them, so neither is computable from it. `completionHash` is primitive for the same reason: which fact an attempt wrote for a row is a fact about this process's history, and no other stored value determines it. The `completionType` and `retiringTypes` a `stalled` event carries are read from the declaration that fixed them, not recomputed per event. |
+| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` row count is tallied from the row-state map on call, and `dropped` is read through to `RowStream`. `sweepFailures`, `lastSweepFailure` and `sweepInFlight` are stored because they are primitive: the map holds phases of rows, not the passes that offered them, so none is computable from it. `completionHash` is primitive for the same reason: which fact an attempt wrote for a row is a fact about this process's history, and no other stored value determines it. The `completionType` and `retiringTypes` a `stalled` event carries are read from the declaration that fixed them, not recomputed per event. |
 | 3 | Do two distinct configurations produce identical behavior? | No. A consumer's `limiter` and the worker's are distinct meanings — private budget versus shared — not two spellings of one. |
 | 4 | Does one variable's valid range depend on another's value? | No. `retry` groups the three knobs that are read together, and no knob's meaning depends on another's value. |
 | 5 | Do frequently changing decisions live inside rarely changing mechanism? | No. Retry is a `RetryPolicy` value the loop reads (§3.5); the loop has no policy branches. |

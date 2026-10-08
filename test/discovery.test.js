@@ -20,6 +20,9 @@ const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 // discovery path fails the run instead of hanging it.
 const DEADLINE_MS = 10_000;
 
+/** The sweep interval the consumers in this file run on. */
+const SWEEP_INTERVAL_MS = 1;
+
 /**
  * A row stream a test drives. `push` resolves once the change has been applied:
  * the generator acknowledges after the `yield` resumes, which is the moment the
@@ -99,6 +102,56 @@ function deferred() {
     settle = { resolve, reject };
   });
   return { promise, ...settle };
+}
+
+/**
+ * A query whose pass can be held open, so a test decides where a pass boundary
+ * falls rather than waiting one out.
+ *
+ * `hold()` makes the next pass wait; `release()` settles the one waiting and
+ * lets later passes read through, until a test holds again. A held pass is the
+ * read that outlives the interval, which is the case the overlap guard is about.
+ */
+function holdableQuery(rows = []) {
+  const query = controllableQuery(rows);
+  const reading = query.read;
+  let holding = undefined;
+  query.hold = () => {
+    holding = deferred();
+  };
+  query.release = () => {
+    const held = holding;
+    holding = undefined;
+    held?.resolve();
+  };
+  query.read = async () => {
+    const held = holding;
+    if (held === undefined) {
+      return await reading();
+    }
+    query.calls += 1;
+    await held.promise;
+    if (query.failure !== undefined) {
+      throw query.failure;
+    }
+    return query.rows;
+  };
+  return query;
+}
+
+/**
+ * Let the consumer's sweep timer fire several times.
+ *
+ * The wait is for ticks of a timer on the same interval, not for a delay the
+ * test chose: once this one has fired `count` times, the event loop has reached
+ * its timers phase that many times and at least that far apart, so the
+ * consumer's timer has had as many turns to fire. A tick that skips leaves no
+ * event of its own to wait for, which is why this is what there is to wait on.
+ */
+async function sweepTicks(count, intervalMs = SWEEP_INTERVAL_MS) {
+  for (let fired = 0; fired < count; fired += 1) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
 }
 
 /**
@@ -193,7 +246,7 @@ function workerOver(t, scene, stream, query, handle, options = {}) {
           givens: [scene.acme],
           completes: Mirrored,
           handle,
-          sweepIntervalMs: 1,
+          sweepIntervalMs: SWEEP_INTERVAL_MS,
           ...options
         })
       ],
@@ -492,6 +545,111 @@ test("a consumer whose every pass has failed reports the failure and no lastSwee
   assert.ok(status.lastSweepFailure.at instanceof Date);
 
   await worker.stop();
+});
+
+test("a tick that fires while a pass is pending starts no second read", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const stream = controllableStream();
+  const query = holdableQuery([world1.rows.r1]);
+  query.hold();
+  // The handler never settles, so the row stays `dispatching` and a later pass
+  // that returns it decides nothing. What this test is about is the reads.
+  const handler = deferred();
+  const worker = workerOver(t, world1, stream, query, recordingHandler(() => handler.promise));
+
+  await worker.start();
+  await until(() => query.calls === 1, "no pass began reading");
+
+  await sweepTicks(5);
+  assert.equal(query.calls, 1, "a tick started a second read while a pass was pending");
+  assert.equal(
+    worker.status().consumers[0].lastSweep,
+    undefined,
+    "a pass settled while the one under test was still reading"
+  );
+
+  // The pending pass settles, and the next tick reads again.
+  query.release();
+  await nextSweep(worker);
+  await until(() => query.calls > 1, "no pass read after the pending one settled");
+
+  handler.resolve();
+  await worker.stop();
+});
+
+test("sweepInFlight names the pending pass, and nothing once a pass settles either way", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const stream = controllableStream();
+  const query = holdableQuery([world1.rows.r1]);
+  query.hold();
+  const handler = deferred();
+  const worker = workerOver(t, world1, stream, query, recordingHandler(() => handler.promise));
+
+  assert.equal(worker.status().consumers[0].sweepInFlight, undefined);
+  await worker.start();
+  await until(() => query.calls === 1, "no pass began reading");
+
+  const pending = worker.status().consumers[0].sweepInFlight;
+  assert.ok(pending.since instanceof Date, "a pending pass reported no start");
+  assert.ok(pending.since.getTime() <= Date.now());
+  // It is the pass that is reported, not the tick: the age an operator reads
+  // off it is the age of this read.
+  await sweepTicks(5);
+  assert.equal(
+    worker.status().consumers[0].sweepInFlight.since.getTime(),
+    pending.since.getTime(),
+    "a later tick moved the pending pass's start"
+  );
+
+  query.release();
+  const settled = await nextSweep(worker);
+  assert.ok(settled.at.getTime() >= pending.since.getTime());
+  assert.equal(
+    worker.status().consumers[0].sweepInFlight,
+    undefined,
+    "a pass that succeeded is still reported as pending"
+  );
+
+  query.rejects(new Error("feed_not_found"));
+  await until(
+    () => worker.status().consumers[0].sweepFailures >= 1,
+    "the failing pass was not counted"
+  );
+  assert.equal(
+    worker.status().consumers[0].sweepInFlight,
+    undefined,
+    "a pass that failed is still reported as pending"
+  );
+
+  handler.resolve();
+  await worker.stop();
+});
+
+test("stop() with a pass pending leaves nothing scheduled, and the pass reports nothing", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const stream = controllableStream();
+  const query = holdableQuery([world1.rows.r1]);
+  query.hold();
+  const handle = recordingHandler();
+  const worker = workerOver(t, world1, stream, query, handle);
+
+  await worker.start();
+  await until(() => query.calls === 1, "no pass began reading");
+  assert.ok(worker.status().consumers[0].sweepInFlight !== undefined);
+
+  await worker.stop();
+  query.release();
+  await quiesce();
+  await sweepTicks(5);
+
+  const status = worker.status().consumers[0];
+  // The pass that outlived discovery has ended, so it is no longer pending, and
+  // it is neither a success nor a failure (§3.2).
+  assert.equal(status.sweepInFlight, undefined, "the settled pass is still reported as pending");
+  assert.equal(status.lastSweep, undefined, "a pass that outlived discovery reported a success");
+  assert.equal(status.sweepFailures, 0, "a pass that outlived discovery was counted");
+  assert.equal(query.calls, 1, "a pass began reading after discovery ended");
+  assert.deepEqual(handle.handled, [], "a pass that outlived discovery admitted a row");
 });
 
 test("the sweep timer stops on stop()", { timeout: DEADLINE_MS }, async t => {

@@ -44,6 +44,14 @@ export class ConsumerRuntime {
     private sweepFailures = 0;
 
     /**
+     * The pass that has not settled yet, and when it started. One field does
+     * both jobs: a tick reads it to decide whether to start a pass, and
+     * `status()` reports it, so what the timer acts on and what an operator
+     * sees cannot disagree.
+     */
+    private sweepInFlight: { since: Date } | undefined;
+
+    /**
      * Where this consumer is in the arc of discovery. Three situations, one
      * field: it has not subscribed yet, its stream is running, or discovery has
      * ended for good. The interval between the subscribe and its answer is
@@ -160,10 +168,18 @@ export class ConsumerRuntime {
      * A pass that outlives discovery is neither, on both paths alike: what it
      * found may not be admitted, and what it failed with is a fact about a
      * backstop the consumer no longer has.
+     *
+     * At most one pass reads at a time: a tick that finds one pending skips,
+     * and the first tick after that pass settles reads again (§3.2). The
+     * pending pass is what `status()` reports while it reads (§2.4).
      */
     private async sweep(): Promise<void> {
+        if (this.sweepInFlight !== undefined) {
+            return;
+        }
         const held = new Set(this.rows.keys());
         const at = Date.now();
+        this.sweepInFlight = { since: new Date(at) };
         try {
             const rows = await this.consumer.query(this.j);
             if (!this.discovering) {
@@ -195,6 +211,11 @@ export class ConsumerRuntime {
                 `${this.consumer.name}: sweep failed`,
                 { consumer: this.consumer.name, error }
             );
+        }
+        finally {
+            // Every exit the read has, including the early return a pass that
+            // outlived discovery takes, releases the next tick to read.
+            this.sweepInFlight = undefined;
         }
     }
 
@@ -519,6 +540,9 @@ export class ConsumerRuntime {
             givenHash: this.givenHash,
             ...countRows(this.rows),
             dropped: this.stream?.dropped ?? 0,
+            ...(this.sweepInFlight === undefined
+                ? {}
+                : { sweepInFlight: this.sweepInFlight }),
             sweepFailures: this.sweepFailures,
             ...(this.lastSweep === undefined ? {} : { lastSweep: this.lastSweep }),
             ...(this.lastSweepFailure === undefined
