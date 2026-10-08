@@ -33,6 +33,13 @@ export interface ConsumerStatus {
     dropped: number;
 
     /**
+     * When the pass that has not settled yet began, absent when none is
+     * pending. One optional rather than a flag beside a time, because a
+     * pending pass without a start is not a state the problem contains.
+     */
+    sweepInFlight?: { since: Date };
+
+    /**
      * Passes that have failed since the last successful one. Consecutive rather
      * than cumulative, because what an operator asks of a backstop is whether
      * it is recovering anything now.
