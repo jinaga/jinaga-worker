@@ -9,8 +9,8 @@ import { Specification, exactInverses, pinLabel } from "jinaga";
  * The proved inverter answers that question directly. Each of its `removes` is
  * the specification the row stream runs when such a fact arrives, and the
  * arriving fact is the given labelled `pinLabel`, so that given's type is the
- * type that retires the row. A type two conditions can retire a row on is one
- * type, so the set holds it once.
+ * type that retires the row. Where two conditions retire a row on the same
+ * type, that type appears once in the returned set.
  */
 export function retiringTypes(specification: Specification): string[] {
     const pinned = exactInverses(specification).removes.flatMap(remove =>
