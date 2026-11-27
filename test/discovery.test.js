@@ -652,6 +652,263 @@ test("stop() with a pass pending leaves nothing scheduled, and the pass reports 
   assert.deepEqual(handle.handled, [], "a pass that outlived discovery admitted a row");
 });
 
+// ---------------------------------------------------------------------------
+// The verdict of a read, against the writes made while it was in flight.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive the sweep pass whose read is waiting, and come back once it has
+ * applied its verdict.
+ *
+ * A test holds the query before it starts the worker, so passes advance one at
+ * a time under the test's control: the read of pass `calls` waits, `during`
+ * runs while it waits, `returns` is what it then answers with, and the pass
+ * after it is held in turn. That next read beginning is what proves the
+ * released pass settled, because a tick that finds a pass pending starts no
+ * read of its own (§3.2).
+ */
+async function heldPass(query, calls, returns, during = async () => {}) {
+  await until(() => query.calls === calls, `pass ${calls} never began reading`);
+  await during();
+  query.returns(returns);
+  query.release();
+  query.hold();
+  await until(() => query.calls === calls + 1, `pass ${calls} never settled`);
+}
+
+/** A handler whose first attempt waits on `completion`, and whose later ones do not. */
+function handlerHolding(completion) {
+  const handle = recordingHandler(async rowValue => {
+    if (handle.handled.length === 1) {
+      await completion.promise;
+    }
+    return new Mirrored(rowValue.result);
+  });
+  return handle;
+}
+
+test("a completion stored while a read was in flight is not swept away by it", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const r1 = world1.rows.r1;
+  const stream = controllableStream();
+  const query = holdableQuery([r1]);
+  query.hold();
+  const completion = deferred();
+  const handle = handlerHolding(completion);
+  const worker = workerOver(t, world1, stream, query, handle);
+  const rows = worker.runtimes[0].rows;
+
+  await worker.start();
+
+  // The row is dispatching before the read that will return it begins.
+  await heldPass(query, 1, [r1], async () => {
+    await stream.push(added(r1));
+    await handle.reaching(1);
+  });
+  assert.equal(rows.get(r1.rowHash).phase, "dispatching");
+
+  // The completion reaches the store while the next read is in flight, so that
+  // read is not still returning the row: it never saw the completion.
+  await heldPass(query, 2, [r1], async () => {
+    completion.resolve();
+    await until(
+      () => rows.get(r1.rowHash)?.phase === "completed",
+      "the completion fact never reached the store"
+    );
+  });
+
+  // The entry is left as the completion left it, and the next pass decides it
+  // from a read that began after the change.
+  assert.deepEqual(
+    { phase: rows.get(r1.rowHash)?.phase, attempts: rows.get(r1.rowHash)?.attempts },
+    { phase: "completed", attempts: 1 },
+    "a read that predates the completion re-dispatched the row"
+  );
+  await quiesce();
+  assert.equal(handle.handled.length, 1, "the handler ran a second time for a row already completed");
+
+  await worker.stop();
+  query.release();
+});
+
+test("a row completed and removed while a read was in flight is not re-admitted by it", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const r1 = world1.rows.r1;
+  const stream = controllableStream();
+  const query = holdableQuery([r1]);
+  query.hold();
+  const completion = deferred();
+  const handle = handlerHolding(completion);
+  const worker = workerOver(t, world1, stream, query, handle);
+  const rows = worker.runtimes[0].rows;
+
+  await worker.start();
+
+  await heldPass(query, 1, [r1], async () => {
+    await stream.push(added(r1));
+    await handle.reaching(1);
+  });
+  assert.equal(rows.get(r1.rowHash).phase, "dispatching");
+
+  // The completion lands and its `removed` arrives behind it, both while the
+  // read is in flight, so the map holds no entry when that read returns.
+  await heldPass(query, 2, [r1], async () => {
+    completion.resolve();
+    await until(
+      () => rows.get(r1.rowHash)?.phase === "completed",
+      "the completion fact never reached the store"
+    );
+    await stream.push(removed(r1));
+  });
+
+  assert.equal(rows.has(r1.rowHash), false, "a read that predates the completion admitted the row again");
+  await quiesce();
+  assert.equal(handle.handled.length, 1, "the handler ran a second time for a row already completed");
+
+  await worker.stop();
+  query.release();
+});
+
+test("a row admitted, completed and removed while a read was in flight is not admitted by it", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const r1 = world1.rows.r1;
+  const stream = controllableStream();
+  const query = holdableQuery([r1]);
+  query.hold();
+  const handle = recordingHandler();
+  const worker = workerOver(t, world1, stream, query, handle);
+  const rows = worker.runtimes[0].rows;
+
+  await worker.start();
+
+  // The map holds no entry for the row when the read begins, and none when it
+  // returns. Its whole cycle happened in between.
+  await heldPass(query, 1, [r1], async () => {
+    await stream.push(added(r1));
+    await handle.reaching(1);
+    await until(
+      () => rows.get(r1.rowHash)?.phase === "completed",
+      "the completion fact never reached the store"
+    );
+    await stream.push(removed(r1));
+  });
+
+  assert.equal(rows.has(r1.rowHash), false, "a read that predates the cycle admitted the row again");
+  await quiesce();
+  assert.equal(handle.handled.length, 1, "the handler ran a second time for a row that had completed");
+
+  await worker.stop();
+  query.release();
+});
+
+test("a row re-admitted while a read was in flight is not retracted by it", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const r1 = world1.rows.r1;
+  const stream = controllableStream();
+  const query = holdableQuery([r1]);
+  query.hold();
+  // No attempt completes, so what the map reports is what discovery left there.
+  const handler = deferred();
+  const handle = recordingHandler(() => handler.promise);
+  const worker = workerOver(t, world1, stream, query, handle);
+  const rows = worker.runtimes[0].rows;
+
+  await worker.start();
+
+  await heldPass(query, 1, [r1], async () => {
+    await stream.push(added(r1));
+    await handle.reaching(1);
+  });
+  assert.equal(rows.get(r1.rowHash).phase, "dispatching");
+
+  // The entry is cleared and written again while the read is in flight, and
+  // that read omits the row. Its omission describes the row as it no longer is.
+  await heldPass(query, 2, [], async () => {
+    await stream.push(removed(r1));
+    await stream.push(added(r1));
+    await handle.reaching(2);
+  });
+
+  assert.equal(
+    rows.get(r1.rowHash)?.phase,
+    "dispatching",
+    "a read that predates the re-admission retracted the row"
+  );
+
+  handler.resolve(new Mirrored(r1.result));
+  await worker.stop();
+  query.release();
+});
+
+test("a row completed before a read began is re-dispatched by it, with one more attempt", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const r1 = world1.rows.r1;
+  const stream = controllableStream();
+  const query = holdableQuery([r1]);
+  query.hold();
+  const handle = recordingHandler();
+  const worker = workerOver(t, world1, stream, query, handle);
+  const rows = worker.runtimes[0].rows;
+
+  await worker.start();
+
+  // This pass returns nothing and held nothing, so it leaves no verdict. What
+  // it buys is a boundary: the row completes while it reads, so the pass after
+  // it begins reading with the completion already stored.
+  await heldPass(query, 1, [], async () => {
+    await stream.push(added(r1));
+    await until(
+      () => rows.get(r1.rowHash)?.phase === "completed",
+      "the completion fact never reached the store"
+    );
+  });
+
+  // A sweep that still returns a `completed` row re-dispatches it, which is how
+  // a stalled row is found (§3.3).
+  await heldPass(query, 2, [r1]);
+
+  // The handler running a second time is the re-dispatch, and the entry carries
+  // the attempt it started.
+  await handle.reaching(2);
+  assert.equal(
+    rows.get(r1.rowHash)?.attempts,
+    2,
+    "the re-dispatch did not carry one more attempt"
+  );
+
+  await worker.stop();
+  query.release();
+});
+
+test("a row untouched while a read was in flight is admitted by it", { timeout: DEADLINE_MS }, async t => {
+  const world1 = await scene("r1");
+  const r1 = world1.rows.r1;
+  const stream = controllableStream();
+  const query = holdableQuery([]);
+  query.hold();
+  const handle = recordingHandler();
+  const worker = workerOver(t, world1, stream, query, handle);
+  const rows = worker.runtimes[0].rows;
+
+  await worker.start();
+
+  // Nothing wrote this row's entry while the read was in flight, so the read
+  // describes it as it still is, and the sweep admits it.
+  await heldPass(query, 1, [r1]);
+
+  // The handler running is the admission, and the row it was handed is the one
+  // the read returned.
+  await handle.reaching(1);
+  assert.deepEqual(
+    handle.handled.map(rowValue => rowValue.rowHash),
+    [r1.rowHash],
+    "the sweep did not admit a row the map held no entry for"
+  );
+
+  await worker.stop();
+  query.release();
+});
+
 test("the sweep timer stops on stop()", { timeout: DEADLINE_MS }, async t => {
   const world1 = await scene();
   const stream = controllableStream();
