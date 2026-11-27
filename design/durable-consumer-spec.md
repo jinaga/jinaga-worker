@@ -701,7 +701,10 @@ consumer declares more than one completion type returns the same type on every
 attempt for the same row and the same premises. Otherwise a re-run of one row
 stores `ApplicationRejected` after `ApplicationApproved` is already in the
 store; both facts are permanent, the row stays retired, and its history carries
-two contradictory decisions.
+two contradictory decisions. The requirement is on the decision rather than on
+the fact's content: two attempts that write one type with different fields leave
+one decision on the record, which is what §3.3 already expects of
+`completionHash` when it names the fact of a row's latest attempt.
 
 ---
 

@@ -173,7 +173,10 @@ So make the handler safe to run twice:
   Content addressing makes a repeated fact harmless only when the attempt
   repeats it. A handler that can return more than one type and takes the other
   decision on a second run stores a second permanent fact, and the row's
-  history then carries two contradictory decisions.
+  history then carries two contradictory decisions. What this asks of you is one
+  decision, not one fact: a second attempt that fills a field differently, with
+  a timestamp of its own, writes another fact of the type it already chose, and
+  the row stays retired on that decision.
 - Give every write outside the graph a key. `row.rowHash` identifies the row,
   and an upsert on it turns a second run into a no-op.
 - Do not treat "I already did this" as an error. A second run that finds its
