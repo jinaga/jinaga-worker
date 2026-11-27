@@ -222,8 +222,8 @@ test("a stale added following a removed for the same row admits it once", () => 
   applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
   applyRowEvent(rows, "r", resolved());
 
-  // One save carries the row's source fact and its completion fact, and
-  // notifications are unordered, so the removed can arrive before the added.
+  // Two saves whose re-checks overlap are not ordered, so the removed decided
+  // by the second can arrive before the added decided by the first.
   applyRowEvent(rows, "r", { kind: "removed" });
   applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 300 });
 
