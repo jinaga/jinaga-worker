@@ -837,14 +837,14 @@ Settled after the RFC, in the order they were taken:
    That slice deletes this list and both illustrations once their content is
    in place.
 10. **The jinaga floor carries the row stream's contract.** `package.json`
-    declares the floor, at the first release whose row stream decides every
-    change by reading the result (jinaga/jinaga.js#336, released in jinaga
-    6.15.0). That is what lets §5 state the contract as a per-save transition
-    of the result, and it is why a save carrying both a row's source fact and
-    its completion fact produces no change for that row. The floor buys no
-    order across saves: nothing schedules two saves whose re-checks overlap
-    (jinaga/jinaga.js#361), so the stale addition of §3.3 remains, by that
-    route alone.
+    declares the floor. What the floor buys is the row stream that decides
+    every change by reading the result, which jinaga/jinaga.js#336 landed and
+    jinaga 6.15.0 was the first release to carry. That is what lets §5 state
+    the contract as a per-save transition of the result, and it is why a save
+    carrying both a row's source fact and its completion fact produces no
+    change for that row. The floor buys no order across saves: nothing
+    schedules two saves whose re-checks overlap (jinaga/jinaga.js#361), so the
+    stale addition of §3.3 remains, by that route alone.
 
 ---
 
