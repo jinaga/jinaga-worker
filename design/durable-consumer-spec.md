@@ -772,6 +772,71 @@ Settled after the RFC, in the order they were taken:
    releases every stream and sweep timer, and spends the worker. Spent is the
    narrow choice: going from spent to re-startable only widens what is accepted,
    so it stays reachable later without breaking anyone.
+9. **A consumer declares its completion types as a tuple.** A queue can retire
+   a row on more than one decision. A review queue, for example, retires an
+   application when it is approved or when it is rejected. `completes` is a
+   non-empty tuple of constructors, and `handle` returns a fact of any of them:
+
+   ```ts
+   // Illustration: the declarations this decision places in §2.2.
+   export type Completions<C extends readonly { type: string }[]> = {
+       readonly [I in keyof C]: CompletionConstructor<C[I]>;
+   };
+
+   export interface ConsumerOptions<
+       T extends unknown[], U,
+       C extends readonly [{ type: string }, ...{ type: string }[]],
+       Q extends { type: string } = never
+   > {
+       // every other member as in §2.2
+       completes: Completions<C>;
+       handle: (row: SpecificationRow<U>) => Promise<NoInfer<C[number]>>;
+   }
+   ```
+
+   A single type is spelled `[X]`, so there is one spelling for any number of
+   types (Art. 3, §10.1 question 3). `completes` is the only place `C` is
+   inferred from. `NoInfer` keeps `handle`'s return out of inference, so a
+   handler that returns a fact outside the declared set is a compile error
+   whether or not the caller writes the type arguments. An empty tuple, a
+   constructor whose `type` widened to `string`, and a handler that resolves
+   without a fact are compile errors too. `defineConsumer` throws for each
+   declared type that the specification does not retire a row on, and names
+   that type.
+
+   A `stalled` event names the type that was written, and the declared set
+   beside it:
+
+   ```ts
+   // Illustration: the StalledEvent members this decision places in §2.3.
+   completionType: string;            // the type of the fact the exhausting attempt stored
+   declaredTypes: readonly string[];  // the types declared in `completes`
+   retiringTypes: readonly string[];  // the types the specification retires a row on
+   completionHash: string;            // the fact stored by the attempt that exhausted the row
+   ```
+
+   `completionType` and `completionHash` describe the same fact, so the event
+   says which decision the handler took and which fact to resolve. T2's
+   diagnosis still holds: the written type is among the retiring types. Like
+   `completionHash`, `completionType` is primitive, because it records which
+   fact this process wrote. `declaredTypes` is read from the declaration, as
+   `retiringTypes` is (§10.1 question 2).
+
+   `test/spec-guard.js` holds §2 and §3 to the shipped types, so the slice that
+   implements this decision also moves it into place, in the same pull request
+   as the code:
+   - §2.2: the block above, and the prose on `completes`, now plural;
+   - §2.3: the `StalledEvent` members above;
+   - §2.5, `README.md` and `docs/handler-contract.md`: `completes: [InvitationMirrored]`;
+   - §3.7: what `stalled` carries;
+   - §7: the rejection test, for each declared type. Two tests are added: a
+     handler returning each declared type retires its row through that type's
+     condition, and an undeclared return fails to compile under inference;
+   - §10.1 row 2 and §10.2 T2: the members above, "a declared type" for
+     `completes.Type`, and `Promise<NoInfer<C[number]>>` for `Promise<C>`.
+
+   That slice deletes this list and both illustrations once their content is
+   in place.
 
 ---
 
