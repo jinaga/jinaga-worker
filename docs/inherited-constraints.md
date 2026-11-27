@@ -22,20 +22,22 @@ Purge conditions are checked on every read and every subscribe. A specification
 over a purgeable fact type must carry the purge condition's `notExists`, or
 every sweep throws.
 
-## Notifications are unordered
+## Changes are decided per save, and nothing is ordered across saves
 
-`ObservableSource.notify` fans out with `Promise.all` and discards the
-topological order the envelopes arrived in. Two facts about where that sits make
-it safe here: `FactManager.save` persists the whole batch before it calls
-`notify`, and each listener re-reads storage, so every notification sees every
-fact of the batch whatever the delivery order. A row therefore reaches the
-stream complete, at the moment its last constituent fact is saved, and the order
-decides only which of two redundant deliveries lands first.
+Each change is decided by reading the result from the replica's own graph, so
+after one save's notifications the rows the stream has offered and not withdrawn
+are exactly what a read returns. Within one save the delivery order decides
+nothing, and a row whose source fact and completion fact arrive in the same save
+is in the result at neither boundary, so that save produces no change for it.
+
+Across two saves whose re-checks overlap there is no order. The first save's
+re-check can read before the second save lands, so an `added` can arrive behind
+the `removed` that retired its row.
 
 The loop is order-insensitive by construction. Two things still follow for you:
 never infer "the parent completed before this child appeared" from delivery
 order, and read [the handler contract](handler-contract.md), because the one
-place the absence of order is visible is a stale `added` behind a `removed`,
+place the absence of order is visible is that stale `added` behind a `removed`,
 which dispatches a row that has already left the set.
 
 ## Nested projections are not observed
