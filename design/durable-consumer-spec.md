@@ -80,7 +80,7 @@ import { Jinaga, SpecificationOf, SpecificationRow } from "jinaga";
 
 export function defineConsumer<
     T extends unknown[], U,
-    C extends { type: string },
+    C extends readonly [{ type: string }, ...{ type: string }[]],
     Q extends { type: string } = never
 >(options: ConsumerOptions<T, U, C, Q>): Consumer;
 
@@ -124,16 +124,20 @@ export interface CompletionConstructor<C extends { type: string }> {
     Type: LiteralType<C>;
 }
 
+export type Completions<C extends readonly { type: string }[]> = {
+    readonly [I in keyof C]: CompletionConstructor<C[I]>;
+};
+
 export interface ConsumerOptions<
     T extends unknown[], U,
-    C extends { type: string },
+    C extends readonly [{ type: string }, ...{ type: string }[]],
     Q extends { type: string } = never
 > {
     name: string;
     specification: SpecificationOf<T, U>;
     givens: T;
-    completes: CompletionConstructor<C>;
-    handle: (row: SpecificationRow<U>) => Promise<C>;
+    completes: Completions<C>;
+    handle: (row: SpecificationRow<U>) => Promise<NoInfer<C[number]>>;
     quarantine?: {
         produces: CompletionConstructor<Q>;
         fact: (row: SpecificationRow<U>, event: NoProgressEvent<U>) => Promise<Q>;
@@ -160,17 +164,29 @@ error. `subscribeRows` and `queryRows` take them variadically, and the library
 spreads.
 
 `handle` returns the completion fact and the library asserts it (§3.4).
-`completes` is the constructor of the fact it returns, and it is not derivable
-from `handle` (Art. 2): a closure's return value cannot be read statically, and
-the type is erased at runtime. It is the one value that carries the fact's
-identity to declaration time, which is where the check has to happen to be worth
-anything.
+`completes` is a non-empty tuple of the constructors of the facts it returns,
+and it is not derivable from `handle` (Art. 2): a closure's return value cannot
+be read statically, and the types are erased at runtime. It is the one value
+that carries those facts' identities to declaration time, which is where the
+check has to happen to be worth anything.
 
-`Type: LiteralType<C>` is what survives erasure. It carries the erased type's
+A queue with one terminal outcome spells it `[X]`; a review queue that retires a
+row when an application is approved and when it is rejected spells it `[X, Y]`.
+That is the one spelling for any number of types (Art. 4, §10.1 question 3).
+`completes` is the only place `C` is inferred from, and `NoInfer` keeps
+`handle`'s return out of inference, so a handler that returns a fact outside the
+declared set is a compile error whether or not the caller writes the type
+arguments. An empty tuple, a constructor whose `type` widened to `string`, and a
+handler that resolves without a fact are compile errors too. `defineConsumer`
+throws for each declared type the specification does not retire a row on, and
+names that type.
+
+`Type: LiteralType<C>` is what survives erasure. It carries each erased type's
 literal into a value `defineConsumer` compares against the specification's
-inverses, so a specification with no `notExists` on the completion fact is
-rejected before a single row is dispatched. It also rejects a fact class whose
-`type` widened to `string` — the declaration in which nothing could be checked.
+inverses, so a specification with no `notExists` on a declared completion fact
+is rejected before a single row is dispatched. It also rejects a fact class
+whose `type` widened to `string` — the declaration in which nothing could be
+checked.
 The discipline it requires is jinaga's own documented idiom:
 
 ```ts
@@ -198,7 +214,7 @@ rejection; a `stalled` event has no error to carry, because the completion fact
 was stored. Modelled as a union, neither `{ kind: "stalled", error }` nor
 `{ kind: "failed" }` can be constructed (Art. 3).
 
-The three members `stalled` carries beyond the shared ones are on that same
+The four members `stalled` carries beyond the shared ones are on that same
 axis. They describe a completion fact, and a `failed` row has none, so they
 belong to one arm of the union (Art. 3).
 
@@ -221,9 +237,10 @@ export interface FailedEvent<U = unknown> extends NoProgress<U> {
 
 export interface StalledEvent<U = unknown> extends NoProgress<U> {
     kind: "stalled";
-    completionType: string;        // the type declared in `completes`
+    completionType: string;            // the type of the fact the exhausting attempt stored
+    declaredTypes: readonly string[];  // the types declared in `completes`
     retiringTypes: readonly string[];  // the types the specification retires a row on
-    completionHash: string;        // the fact stored by the attempt that exhausted the row
+    completionHash: string;            // the fact stored by the attempt that exhausted the row
 }
 ```
 
@@ -291,7 +308,7 @@ const invitations = defineConsumer({
     name: "invitation-mirror",
     specification: outstandingInvitations,
     givens: [tenant],
-    completes: InvitationMirrored,
+    completes: [InvitationMirrored],
     handle: async row => {
         await repo.upsertInvitation(pool, row.result, j.hash(row.result));
         return new InvitationMirrored(row.result);
@@ -399,7 +416,7 @@ intersection of several sets.
 type RowState<U> =
     | { phase: "dispatching"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "waiting";     row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; retryAt: number }
-    | { phase: "completed";   row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; completionHash: string }
+    | { phase: "completed";   row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; completionHash: string; completionType: string }
     | { phase: "quarantined"; row: SpecificationRow<U> };
 ```
 
@@ -411,7 +428,8 @@ attempted again and never reported again, so it carries neither. `completed`
 means the completion fact is in the store, and `completionHash` names it: the
 write's own answer, hashed where it returns, so a row that cycles through
 `dispatching` again carries the fact of its latest attempt rather than an
-earlier one. The attempt covers the handler and the assertion together (§3.4),
+earlier one. `completionType` is that same answer's type, which is what lets a
+`stalled` report say which of the declared decisions the handler took (§3.7). The attempt covers the handler and the assertion together (§3.4),
 so a handler that returns a fact the store rejects leaves the row `waiting`.
 
 | From | Event | To |
@@ -504,17 +522,18 @@ Two diagnoses, opposite responses:
   because the library performs that write and sees the rejection.
 - **`stalled`** — the completion fact was *stored* `maxAttempts` times and a
   subsequent `queryRows` still contains the `rowHash`. A programming error that
-  will not resolve on its own: the fact carries the declared type, so it was
+  will not resolve on its own: the fact carries a declared type, so it was
   written against a predecessor the specification does not read, and the row
   goes on matching its own outstanding set. SIGTERM is an honest response.
 
 `stalled` is decided by the sweep, never by the absence of a removal
 notification — the `completed` rows of §3.3's table. The event carries
-`completionType`, `retiringTypes` and `completionHash`, which state the case
-precisely: the declared type is among the retiring types, so the shape of the
-specification is right and the fact was written, and the hash is the fact to
-resolve to see which row it retired. The exhaustion log carries the same
-members, so that reading is greppable without an `onNoProgress` handler.
+`completionType`, `declaredTypes`, `retiringTypes` and `completionHash`, which
+state the case precisely: `completionType` is the type the exhausting attempt
+stored, and it is one of the declared types and among the retiring types, so
+the shape of the specification is right and the fact was written, and the hash
+is the fact to resolve to see which row it retired. The exhaustion log carries the
+same members, so that reading is greppable without an `onNoProgress` handler.
 
 ### 3.8 Stop
 
@@ -786,7 +805,9 @@ reverted:
 - re-attempts a rejected row on backoff and stops at `retry.maxAttempts`
 - releases the limiter slot while waiting to retry
 - asserts the fact the handler returns, once per successful attempt
-- rejects at `defineConsumer` a specification with no `notExists` on `completes.Type`, and one with no `notExists` on a declared `quarantine.produces.Type`
+- rejects at `defineConsumer` a specification with no `notExists` on a declared type in `completes`, for each position in the tuple, and one with no `notExists` on a declared `quarantine.produces.Type`
+- retires a row through each declared type, when the handler returns a fact of that type
+- refuses a handler returning a fact outside the declared set, under inference and with the type arguments written out
 - reports `failed`, carrying the rejection, when the completion fact is rejected
 - calls `quarantine.fact` exactly once when attempts are exhausted, and asserts what it returns
 - quarantines even when `quarantine.fact` throws, and when its assertion is rejected
@@ -861,24 +882,8 @@ Settled after the RFC, in the order they were taken:
 9. **A consumer declares its completion types as a tuple.** A queue can retire
    a row on more than one decision. A review queue, for example, retires an
    application when it is approved or when it is rejected. `completes` is a
-   non-empty tuple of constructors, and `handle` returns a fact of any of them:
-
-   ```ts
-   // Illustration: the declarations this decision places in §2.2.
-   export type Completions<C extends readonly { type: string }[]> = {
-       readonly [I in keyof C]: CompletionConstructor<C[I]>;
-   };
-
-   export interface ConsumerOptions<
-       T extends unknown[], U,
-       C extends readonly [{ type: string }, ...{ type: string }[]],
-       Q extends { type: string } = never
-   > {
-       // every other member as in §2.2
-       completes: Completions<C>;
-       handle: (row: SpecificationRow<U>) => Promise<NoInfer<C[number]>>;
-   }
-   ```
+   non-empty tuple of constructors, and `handle` returns a fact of any of them
+   (§2.2).
 
    A single type is spelled `[X]`, so there is one spelling for any number of
    types (Art. 4, §10.1 question 3). `completes` is the only place `C` is
@@ -891,38 +896,12 @@ Settled after the RFC, in the order they were taken:
    that type.
 
    A `stalled` event names the type that was written, and the declared set
-   beside it:
-
-   ```ts
-   // Illustration: the StalledEvent members this decision places in §2.3.
-   completionType: string;            // the type of the fact the exhausting attempt stored
-   declaredTypes: readonly string[];  // the types declared in `completes`
-   retiringTypes: readonly string[];  // the types the specification retires a row on
-   completionHash: string;            // the fact stored by the attempt that exhausted the row
-   ```
-
-   `completionType` and `completionHash` describe the same fact, so the event
-   says which decision the handler took and which fact to resolve. T2's
-   diagnosis still holds: the written type is among the retiring types. Like
-   `completionHash`, `completionType` is primitive, because it records which
-   fact this process wrote. `declaredTypes` is read from the declaration, as
-   `retiringTypes` is (§10.1 question 2).
-
-   `test/spec-guard.js` holds §2 and §3 to the shipped types, so the slice that
-   implements this decision also moves it into place, in the same pull request
-   as the code:
-   - §2.2: the block above, and the prose on `completes`, now plural;
-   - §2.3: the `StalledEvent` members above;
-   - §2.5, `README.md` and `docs/handler-contract.md`: `completes: [InvitationMirrored]`;
-   - §3.7: what `stalled` carries;
-   - §7: the rejection test, for each declared type. Two tests are added: a
-     handler returning each declared type retires its row through that type's
-     condition, and an undeclared return fails to compile under inference;
-   - §10.1 row 2 and §10.2 T2: the members above, "a declared type" for
-     `completes.Type`, and `Promise<NoInfer<C[number]>>` for `Promise<C>`.
-
-   That slice deletes this list and both illustrations once their content is
-   in place.
+   beside it (§2.3). `completionType` and `completionHash` describe the same
+   fact, so the event says which decision the handler took and which fact to
+   resolve. T2's diagnosis still holds: the written type is among the retiring
+   types. Like `completionHash`, `completionType` is primitive, because it
+   records which fact this process wrote. `declaredTypes` is read from the
+   declaration, as `retiringTypes` is (§10.1 question 2).
 10. **The jinaga floor carries the row stream's contract.** `package.json`
     declares the floor. What the floor buys is the row stream that decides
     every change by reading the result, which jinaga/jinaga.js#336 landed and
@@ -953,12 +932,12 @@ rediscovered.
 | # | Question | Verdict |
 | --- | --- | --- |
 | 1 | Can I represent a state I would then have to forbid? | No. |
-| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` row count is tallied from the row-state map on call, and `dropped` is read through to `RowStream`. `sweepFailures`, `lastSweepFailure` and `sweepInFlight` are stored because they are primitive: the map holds phases of rows, not the passes that offered them, so none is computable from it. `completionHash` is primitive for the same reason: which fact an attempt wrote for a row is a fact about this process's history, and no other stored value determines it. The `completionType` and `retiringTypes` a `stalled` event carries are read from the declaration that fixed them, not recomputed per event. |
+| 2 | Is any value stored that could be computed? | No. Every `ConsumerStatus` row count is tallied from the row-state map on call, and `dropped` is read through to `RowStream`. `sweepFailures`, `lastSweepFailure` and `sweepInFlight` are stored because they are primitive: the map holds phases of rows, not the passes that offered them, so none is computable from it. `completionHash` is primitive for the same reason: which fact an attempt wrote for a row is a fact about this process's history, and no other stored value determines it. The `declaredTypes` and `retiringTypes` a `stalled` event carries are read from the declaration that fixed them, not recomputed per event, and `completionType` is primitive beside `completionHash`, because it records which fact this process wrote. |
 | 3 | Do two distinct configurations produce identical behavior? | No. A consumer's `limiter` and the worker's are distinct meanings — private budget versus shared — not two spellings of one. |
 | 4 | Does one variable's valid range depend on another's value? | No. `retry` groups the three knobs that are read together, and no knob's meaning depends on another's value. |
 | 5 | Do frequently changing decisions live inside rarely changing mechanism? | No. Retry is a `RetryPolicy` value the loop reads (§3.5); the loop has no policy branches. |
 | 6 | Does the top layer read as steps rather than intent? | No. A consumer is a declaration — specification, handler, quarantine — and §3.3's table is the mechanism that gives it meaning. |
-| 7 | Can a well-formed specification produce a broken system? | **Yes, in one way.** A completion fact of the declared type written against the wrong predecessor. Tension T2. |
+| 7 | Can a well-formed specification produce a broken system? | **Yes, in one way.** A completion fact of a declared type written against the wrong predecessor. Tension T2. |
 | 8 | Does one intended change force coordinated changes elsewhere? | **Yes, in one place**, refused at declaration. Tension T1. |
 
 ### 10.2 Tensions
@@ -977,22 +956,24 @@ coupling is expressed once, in the pattern of §4, and breaking it costs a
 rejected declaration.
 
 **T2 — The specification language is not closed (Art. 7).** A well-formed
-specification can produce a broken system in one way: a completion fact of the
+specification can produce a broken system in one way: a completion fact of a
 declared type, written against a predecessor the specification does not read.
 The library cannot check that one. It does not know which member of the
 projection should hold the row, so it cannot say which predecessor the fact was
 owed. The case runs, reaches `maxAttempts`, and reports as `stalled`.
 
-Three neighbouring failures are refused earlier. A specification carrying no
-`notExists` on `completes.Type`, and one whose condition names a different fact
-type, are both refused by `defineConsumer`, which compares that literal against
-the specification's inverses. A handler that resolves without producing a fact
-does not compile, because `handle` returns `Promise<C>`. What remains is
-diagnosed in `stalled` rather than refused by the grammar. The event carries
-`completionType`, `retiringTypes` and `completionHash`, which state the residual
-case precisely: the declared type is among the retiring types, so the shape of
-the specification is right and the fact was written, and the hash names the fact
-whose predecessor is the thing left to check. Making that comparison is the
+Four neighbouring failures are refused earlier. A specification carrying no
+`notExists` on a declared type, and one whose condition names a different fact
+type, are both refused by `defineConsumer`, which compares each literal against
+the specification's inverses. A handler that resolves without producing a fact,
+and one that returns a fact outside the declared set, do not compile, because
+`handle` returns `Promise<NoInfer<C[number]>>`. What remains is diagnosed in
+`stalled` rather than refused by the grammar. The event carries
+`completionType`, `declaredTypes`, `retiringTypes` and `completionHash`, which
+state the residual case precisely: the type the attempt stored is among the
+retiring types, so the shape of the specification is right and the fact was
+written, and the hash names the fact whose predecessor is the thing left to
+check. Making that comparison is the
 tension. The library holds both halves and reports them, and cannot close a
 language it does not own.
 

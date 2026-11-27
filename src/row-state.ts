@@ -5,7 +5,8 @@ import { SpecificationRow } from "jinaga";
  *
  * Four phases for the four situations a row can be in. `completed` means the
  * completion fact is in the store, which is where an attempt ends, and
- * `completionHash` names the fact this process stored to get there. `attempts`
+ * `completionHash` and `completionType` name the fact this process stored to
+ * get there and say which declared decision it records. `attempts`
  * and `firstAttemptAt` appear on the phases where they govern something: the
  * attempt limit, and the elapsed time a non-progress report carries. A row
  * reaches exhaustion from `dispatching` and from `completed` alike, so both
@@ -15,7 +16,7 @@ import { SpecificationRow } from "jinaga";
 export type RowState<U> =
     | { phase: "dispatching"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number }
     | { phase: "waiting"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; retryAt: number }
-    | { phase: "completed"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; completionHash: string }
+    | { phase: "completed"; row: SpecificationRow<U>; attempts: number; firstAttemptAt: number; completionHash: string; completionType: string }
     | { phase: "quarantined"; row: SpecificationRow<U> };
 
 /**
@@ -48,7 +49,7 @@ export type RowEvent<U> =
     | { kind: "added"; row: SpecificationRow<U>; at: number }
     | { kind: "swept"; row: SpecificationRow<U>; at: number; maxAttempts: number }
     | { kind: "removed" }
-    | { kind: "resolved"; completionHash: string }
+    | { kind: "resolved"; completionHash: string; completionType: string }
     | { kind: "rejected"; retryAt: number; maxAttempts: number }
     | { kind: "retryDue" };
 
@@ -98,7 +99,8 @@ export function transition<U>(
                     row: current.row,
                     attempts: current.attempts,
                     firstAttemptAt: current.firstAttemptAt,
-                    completionHash: event.completionHash
+                    completionHash: event.completionHash,
+                    completionType: event.completionType
                 };
             }
             if (event.kind === "rejected") {

@@ -84,14 +84,19 @@ const BLOCKS = {
             CompletionConstructor: [
                 "__Expect<__Equal<CompletionConstructor<Completion>, dist.CompletionConstructor<Completion>>>"
             ],
+            Completions: [
+                "__Expect<__Equal<Completions<[Completion]>, dist.Completions<[Completion]>>>",
+                "__Expect<__Equal<Completions<[Completion, Quarantined]>, " +
+                    "dist.Completions<[Completion, Quarantined]>>>"
+            ],
             // The second instantiation leaves `Q` to its default, so a default
             // that went missing on either side is a compile error rather than a
             // comparison that passes.
             ConsumerOptions: [
-                "__Expect<__Equal<ConsumerOptions<[Given], Projection, Completion, Quarantined>, " +
-                    "dist.ConsumerOptions<[Given], Projection, Completion, Quarantined>>>",
-                "__Expect<__Equal<ConsumerOptions<[Given], Projection, Completion>, " +
-                    "dist.ConsumerOptions<[Given], Projection, Completion>>>"
+                "__Expect<__Equal<ConsumerOptions<[Given], Projection, [Completion], Quarantined>, " +
+                    "dist.ConsumerOptions<[Given], Projection, [Completion], Quarantined>>>",
+                "__Expect<__Equal<ConsumerOptions<[Given], Projection, [Completion]>, " +
+                    "dist.ConsumerOptions<[Given], Projection, [Completion]>>>"
             ],
             RetryPolicy: ["__Expect<__Equal<RetryPolicy, dist.RetryPolicy>>"]
         },

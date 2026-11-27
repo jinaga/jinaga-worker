@@ -51,18 +51,21 @@ export interface FailedEvent<U = unknown> extends NoProgress<U> {
  * It is the sweep that decides this, never the absence of a removal
  * notification.
  *
- * The three members below are the halves of the comparison the library already
+ * The four members below are the halves of the comparison the library already
  * holds: `completionType` is among `retiringTypes`, so the shape of the
- * specification is right and the fact was written. What is left to check is
- * which row that fact points at, and `completionHash` is how it is looked up.
- * They belong to this event alone, because a `failed` row has no completion
- * fact to name.
+ * specification is right and the fact was written, and it says which of
+ * `declaredTypes` the handler decided on. What is left to check is which row
+ * that fact points at, and `completionHash` is how it is looked up. They belong
+ * to this event alone, because a `failed` row has no completion fact to name.
  */
 export interface StalledEvent<U = unknown> extends NoProgress<U> {
     kind: "stalled";
 
-    /** The type the consumer declared in `completes`. */
+    /** The type of the fact the exhausting attempt stored. */
     completionType: string;
+
+    /** The types the consumer declared in `completes`. */
+    declaredTypes: readonly string[];
 
     /** The types the specification retires a row on. */
     retiringTypes: readonly string[];

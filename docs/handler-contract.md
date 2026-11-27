@@ -5,8 +5,8 @@ represents. This page states what the library guarantees about how it is
 called, and what it requires of you in return.
 
 ```ts
-completes: CompletionConstructor<C>
-handle: (row: SpecificationRow<U>) => Promise<C>
+completes: Completions<C>
+handle: (row: SpecificationRow<U>) => Promise<NoInfer<C[number]>>
 ```
 
 ## The handler returns the completion fact
@@ -16,17 +16,18 @@ excludes reaches the store. Your handler builds that fact and returns it; the
 library asserts it.
 
 ```ts
-completes: InvitationMirrored,
+completes: [InvitationMirrored],
 handle: async row => {
     await repo.upsertInvitation(pool, row.result, row.rowHash);
     return new InvitationMirrored(row.result);
 }
 ```
 
-`completes` is the constructor of the fact `handle` returns, declared alongside
-it. The library cannot read a closure's return value, and the fact's type is
-erased at runtime, so this is what carries the fact's identity to the
-declaration. The class supplies it in jinaga's own idiom:
+`completes` is a non-empty tuple of the constructors of the facts `handle`
+returns, declared alongside it. The library cannot read a closure's return
+value, and a fact's type is erased at runtime, so this is what carries those
+facts' identities to the declaration. Each class supplies it in jinaga's own
+idiom:
 
 ```ts
 class InvitationMirrored {
@@ -41,27 +42,54 @@ without it is refused where you write it, because a widened type carries nothing
 to check.
 
 Two mistakes are compile errors rather than runtime surprises: a handler that
-resolves without producing a fact, and one that returns a fact of a type other
-than the one `completes` names.
+resolves without producing a fact, and one that returns a fact of a type outside
+the declared set. An empty `completes` is one too — a consumer that can never
+retire a row.
 
 A third is caught when you declare the consumer. `defineConsumer` inverts your
-specification to find the fact types that take a row out of it, and throws when
-`completes` names none of them — a specification carrying no `notExists` at all,
-or one whose condition names a different fact. The message names the type you
-declared and the types the specification does retire on.
+specification to find the fact types that take a row out of it, and throws for
+each declared type that is none of them — a specification carrying no
+`notExists` at all, or one whose condition names a different fact. The message
+names the type it refused and the types the specification does retire on.
 
-What that leaves is a fact of the declared type written against the wrong
+What that leaves is a fact of a declared type written against the wrong
 predecessor. It is type-correct, it retires some other row, and the library
 cannot see it: the library does not know which member of your projection should
 hold the row. That one reaches `maxAttempts` and reports as `stalled`.
 
 The report is where you diagnose it. A `stalled` event carries
-`completionType`, the type you declared; `retiringTypes`, the types your
+`completionType`, the type of the fact the exhausting attempt stored;
+`declaredTypes`, the types you declared; `retiringTypes`, the types your
 specification retires a row on; and `completionHash`, the fact the library
-stored on the attempt that gave up. The first is among the second, so the
-specification's shape is right and the fact was written. Resolve the hash and
-read that fact's predecessors: they name the row it retired, which is not the
-row your handler was given.
+stored on the attempt that gave up. The first is among the other two, so the
+specification's shape is right and the fact was written, and it says which
+decision your handler took. Resolve the hash and read that fact's predecessors:
+they name the row it retired, which is not the row your handler was given.
+
+## A queue with two terminal outcomes
+
+Some queues retire a row on more than one decision, and both are decisions about
+the row rather than failures. A review queue is the usual case: an application
+leaves the outstanding set when it is approved, and when it is rejected. Declare
+both, and return whichever one the row earned:
+
+```ts
+completes: [ApplicationApproved, ApplicationRejected],
+handle: async row => {
+    const verdict = await review(row.result);
+    return verdict.approved
+        ? new ApplicationApproved(row.result, verdict.reviewer)
+        : new ApplicationRejected(row.result, verdict.reason);
+}
+```
+
+Your specification excludes both, with one `notExists` each. A single outcome is
+spelled `[InvitationMirrored]`, the same way, so there is one spelling however
+many outcomes you have.
+
+A row can be dispatched more than once, so which outcome the handler returns has
+to be a function of the row and the premises it read: see
+[the handler must be idempotent](#the-handler-must-be-idempotent).
 
 ## The attempt ends when the fact is stored
 

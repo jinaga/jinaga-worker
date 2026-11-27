@@ -315,7 +315,8 @@ export class ConsumerRuntime {
             // `stalled`, and it is the sweep that decides it.
             this.exhausted(rowHash, previous, {
                 kind: "stalled",
-                completionHash: previous.completionHash
+                completionHash: previous.completionHash,
+                completionType: previous.completionType
             });
             return undefined;
         }
@@ -406,7 +407,8 @@ export class ConsumerRuntime {
             // fact the store holds rather than the prototype offered to it.
             this.write(rowHash, {
                 kind: "resolved",
-                completionHash: this.j.hash(completion)
+                completionHash: this.j.hash(completion),
+                completionType: completion.type
             });
         }
     }
@@ -470,7 +472,7 @@ export class ConsumerRuntime {
         state: { row: SpecificationRow<unknown>; attempts: number; firstAttemptAt: number },
         diagnosis:
             | { kind: "failed"; error: unknown }
-            | { kind: "stalled"; completionHash: string }
+            | { kind: "stalled"; completionHash: string; completionType: string }
     ): void {
         const noProgress = {
             consumer: this.consumer.name,
@@ -485,7 +487,8 @@ export class ConsumerRuntime {
             : {
                 ...noProgress,
                 kind: "stalled",
-                completionType: this.consumer.completionType,
+                completionType: diagnosis.completionType,
+                declaredTypes: this.consumer.declaredTypes,
                 retiringTypes: this.consumer.retiringTypes,
                 completionHash: diagnosis.completionHash
             };

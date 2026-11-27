@@ -61,7 +61,7 @@ defineConsumer({
     name: "items",
     specification: outstanding,
     givens: [acme],
-    completes: ItemMirrored,
+    completes: [ItemMirrored],
     handle: complete
 });
 
@@ -70,12 +70,25 @@ defineConsumer({
     name: "items",
     specification: outstanding,
     givens: [acme],
-    completes: ItemMirrored,
+    completes: [ItemMirrored],
     handle: complete,
     quarantine: {
         produces: ItemQuarantined,
         fact: async (row, event) => new ItemQuarantined(row.result, event.kind)
     }
+});
+
+// Two terminal outcomes, and a handler that returns either of them. Each
+// constructor keeps its own fact type, so the union the handler may return is
+// the one the tuple declares and nothing wider.
+defineConsumer({
+    name: "items",
+    specification: outstanding,
+    givens: [acme],
+    completes: [ItemMirrored, ItemArchived],
+    handle: async (row: SpecificationRow<Item>) => row.result.key === "archive"
+        ? new ItemArchived(row.result)
+        : new ItemMirrored(row.result)
 });
 
 // A fact class whose `type` widened to `string` is the declaration in which
@@ -85,28 +98,71 @@ defineConsumer({
     specification: outstanding,
     givens: [acme],
     // @ts-expect-error
-    completes: ItemWidened,
+    completes: [ItemWidened],
     handle: async (row: SpecificationRow<Item>) => new ItemWidened(row.result)
 });
 
-// A handler returning a structurally identical fact of another declared type.
-// The completion type is written out here rather than left to inference, which
-// would take it from `handle` and report the disagreement against `completes`.
-defineConsumer<[Tenant], Item, ItemMirrored>({
+// A bare constructor is not a second spelling of a one-type declaration: the
+// tuple is the only one.
+defineConsumer({
     name: "items",
     specification: outstanding,
     givens: [acme],
+    // @ts-expect-error
     completes: ItemMirrored,
+    handle: complete
+});
+
+// An empty tuple declares a consumer no fact could retire a row for.
+defineConsumer({
+    name: "items",
+    specification: outstanding,
+    givens: [acme],
+    // @ts-expect-error
+    completes: [],
+    handle: complete
+});
+
+// A handler returning a structurally identical fact of an undeclared type, with
+// the type arguments left to inference. `completes` is the only site `C` is
+// inferred from, so the return is reported against the declaration rather than
+// widening it.
+defineConsumer({
+    name: "items",
+    specification: outstanding,
+    givens: [acme],
+    completes: [ItemMirrored],
+    // @ts-expect-error
+    handle: async (row: SpecificationRow<Item>) => new ItemArchived(row.result)
+});
+
+// The same refusal with the type arguments written out.
+defineConsumer<[Tenant], Item, [ItemMirrored]>({
+    name: "items",
+    specification: outstanding,
+    givens: [acme],
+    completes: [ItemMirrored],
+    // @ts-expect-error
+    handle: async (row: SpecificationRow<Item>) => new ItemArchived(row.result)
+});
+
+// A handler that returns a fact of one declared type where two are declared is
+// accepted; one outside the pair is not.
+defineConsumer({
+    name: "items",
+    specification: outstanding,
+    givens: [acme],
+    completes: [ItemMirrored, ItemQuarantined],
     // @ts-expect-error
     handle: async (row: SpecificationRow<Item>) => new ItemArchived(row.result)
 });
 
 // A handler that resolves without producing a completion fact.
-defineConsumer<[Tenant], Item, ItemMirrored>({
+defineConsumer<[Tenant], Item, [ItemMirrored]>({
     name: "items",
     specification: outstanding,
     givens: [acme],
-    completes: ItemMirrored,
+    completes: [ItemMirrored],
     // @ts-expect-error
     handle: async () => {}
 });
@@ -116,7 +172,7 @@ defineConsumer({
     name: "items",
     specification: outstanding,
     givens: [acme],
-    completes: ItemMirrored,
+    completes: [ItemMirrored],
     handle: complete,
     // @ts-expect-error
     quarantine: { produces: ItemQuarantined }
@@ -127,7 +183,7 @@ defineConsumer({
     name: "items",
     specification: outstanding,
     givens: [acme],
-    completes: ItemMirrored,
+    completes: [ItemMirrored],
     handle: complete,
     // @ts-expect-error
     quarantine: {
@@ -136,11 +192,11 @@ defineConsumer({
 });
 
 // A quarantine factory returning a fact of a type the group does not declare.
-defineConsumer<[Tenant], Item, ItemMirrored, ItemQuarantined>({
+defineConsumer<[Tenant], Item, [ItemMirrored], ItemQuarantined>({
     name: "items",
     specification: outstanding,
     givens: [acme],
-    completes: ItemMirrored,
+    completes: [ItemMirrored],
     handle: complete,
     quarantine: {
         produces: ItemQuarantined,

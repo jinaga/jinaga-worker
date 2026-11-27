@@ -11,7 +11,7 @@ const consumerOf = (stage, name, options = {}) => defineConsumer({
   name,
   specification: outstanding,
   givens: [stage.tenants[name]],
-  completes: Mirrored,
+  completes: [Mirrored],
   handle: completing,
   ...options
 });

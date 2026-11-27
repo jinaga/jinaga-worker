@@ -45,6 +45,17 @@ export interface CompletionConstructor<C extends { type: string }> {
 }
 
 /**
+ * The constructors of the facts a consumer's callback returns, one per declared
+ * completion type.
+ *
+ * Mapping over the tuple pairs each constructor with its own fact type, so `C`
+ * is recovered element by element.
+ */
+export type Completions<C extends readonly { type: string }[]> = {
+    readonly [I in keyof C]: CompletionConstructor<C[I]>;
+};
+
+/**
  * What a caller declares about one consumer.
  *
  * Everything here varies per consumer. A setting shared across the whole
@@ -53,7 +64,7 @@ export interface CompletionConstructor<C extends { type: string }> {
 export interface ConsumerOptions<
     T extends unknown[],
     U,
-    C extends { type: string },
+    C extends readonly [{ type: string }, ...{ type: string }[]],
     Q extends { type: string } = never
 > {
     /** The consumer's name, as it appears in status and diagnostics. */
@@ -74,12 +85,14 @@ export interface ConsumerOptions<
     givens: T;
 
     /**
-     * The constructor of the fact `handle` returns.
+     * The constructors of the facts `handle` returns, as a non-empty tuple. A
+     * queue that retires a row on one decision declares `[X]`, and one that
+     * retires it on either of two declares `[X, Y]`.
      *
-     * It is not derivable from `handle` (Art. 2): the type is erased at runtime
-     * and a closure's return cannot be read statically.
+     * They are not derivable from `handle` (Art. 2): the types are erased at
+     * runtime and a closure's return cannot be read statically.
      */
-    completes: CompletionConstructor<C>;
+    completes: Completions<C>;
 
     /**
      * What the consumer does with a row, ending in the completion fact that
@@ -88,8 +101,12 @@ export interface ConsumerOptions<
      * One call is one attempt, and failure is a rejection. Retrying belongs to
      * the consumer's `retry`, so the handler keeps none of its own. See
      * [the handler contract](../docs/handler-contract.md).
+     *
+     * `completes` is the only site `C` is inferred from, which is what
+     * `NoInfer` holds: a return outside the declared set is reported against
+     * the declaration, whether or not the caller writes the type arguments.
      */
-    handle: (row: SpecificationRow<U>) => Promise<C>;
+    handle: (row: SpecificationRow<U>) => Promise<NoInfer<C[number]>>;
 
     /**
      * What the application records about a row that has run out of attempts.
@@ -156,17 +173,17 @@ export interface Consumer {
     readonly handlerTimeoutMs: number;
 
     /**
-     * The type of the fact `handle` returns, as `completes` named it, and the
-     * fact types the specification retires a row on.
+     * The types of the facts `handle` returns, as `completes` named them, and
+     * the fact types the specification retires a row on.
      *
-     * Both are fixed when the declaration is: the literal is read off
+     * Both are fixed when the declaration is: the literals are read off
      * `completes`, and the set is the one `defineConsumer` inverted the
      * specification for. A `stalled` report carries them, so it reads them here
      * rather than inverting the specification again (Art. 2).
      */
-    readonly completionType: string;
+    readonly declaredTypes: readonly string[];
 
-    /** @see Consumer.completionType */
+    /** @see Consumer.declaredTypes */
     readonly retiringTypes: readonly string[];
 
     /**
@@ -209,16 +226,16 @@ export interface Consumer {
  * specification, the givens and the handler are fixed together, and the
  * defaults of section 6 are resolved here, where they have their one home.
  *
- * Throws when a declared fact type is one the specification never excludes,
- * because such a consumer cannot retire the row it is given. This is the
- * earliest point the comparison can be made: `Type` carries the erased fact's
- * identity here, and the specification's inverses say what actually shrinks the
- * outstanding set.
+ * Throws for each declared fact type the specification never excludes, because
+ * such a consumer cannot retire the row it is given through that type. This is
+ * the earliest point the comparison can be made: `Type` carries the erased
+ * fact's identity here, and the specification's inverses say what actually
+ * shrinks the outstanding set.
  */
 export function defineConsumer<
     T extends unknown[],
     U,
-    C extends { type: string },
+    C extends readonly [{ type: string }, ...{ type: string }[]],
     Q extends { type: string } = never
 >(
     options: ConsumerOptions<T, U, C, Q>
@@ -228,7 +245,10 @@ export function defineConsumer<
     const quarantine = options.quarantine;
 
     const retiring = retiringTypes(options.specification.specification);
-    requireRetiringType(options.name, "completes", options.completes.Type, retiring);
+    const declaredTypes = options.completes.map(completion => completion.Type);
+    for (const declaredType of declaredTypes) {
+        requireRetiringType(options.name, "completes", declaredType, retiring);
+    }
     if (quarantine !== undefined) {
         requireRetiringType(
             options.name,
@@ -244,7 +264,7 @@ export function defineConsumer<
         retry: options.retry ?? DEFAULT_RETRY_POLICY,
         sweepIntervalMs,
         handlerTimeoutMs: options.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS,
-        completionType: options.completes.Type,
+        declaredTypes,
         retiringTypes: retiring,
         givenHash: j => options.givens.map(given => j.hash(given as Fact)).join(","),
         subscribe: async (j, feedTimeoutMs) => {

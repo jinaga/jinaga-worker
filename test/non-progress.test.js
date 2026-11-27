@@ -5,8 +5,10 @@ const { defineConsumer } = require("../dist/index.js");
 const { WorkerHost } = require("../dist/worker.js");
 const { distributionDiagnostics } = require("../dist/diagnostics.js");
 const {
+  Approved,
   Mirrored,
   Quarantined,
+  Rejected,
   Subject,
   Tenant,
   completionsOf,
@@ -15,6 +17,8 @@ const {
   outstanding,
   outstandingRow,
   quarantinesOf,
+  reviewQueue,
+  reviewRow,
   world
 } = require("./outstanding-model.js");
 
@@ -169,7 +173,7 @@ function workerOver(t, scene, handle, options = {}) {
         name: "invitations",
         specification: outstanding,
         givens: [scene.acme],
-        completes: Mirrored,
+        completes: [Mirrored],
         handle,
         retry: FAST_RETRY,
         sweepIntervalMs: options.sweepIntervalMs ?? 60_000,
@@ -446,18 +450,27 @@ test("a completion fact built against another row reports stalled naming the fac
   assert.equal(event.kind, "stalled");
   assert.equal(phaseOf(rows, r1.rowHash), "quarantined");
 
-  assert.equal(event.completionType, Mirrored.Type, "the event did not name the declared type");
+  assert.equal(
+    event.completionType,
+    Mirrored.Type,
+    "the event did not name the type the exhausting attempt stored"
+  );
+  assert.deepEqual(
+    [...event.declaredTypes],
+    [Mirrored.Type],
+    "the event did not name the one type this consumer declared"
+  );
   assert.deepEqual(
     [...event.retiringTypes].sort(),
     [Mirrored.Type, Quarantined.Type].sort(),
     "the event did not name the types the specification retires a row on"
   );
-  // The two halves of the comparison, as the event states it: the declared type
-  // is among the retiring types, so the shape of the specification is right and
-  // the fact was written. Which row it points at is what is left.
+  // The two halves of the comparison, as the event states it: the type that was
+  // stored is among the retiring types, so the shape of the specification is
+  // right and the fact was written. Which row it points at is what is left.
   assert.ok(
     event.retiringTypes.includes(event.completionType),
-    "the declared type is not among the retiring types, so this is not the residual case"
+    "the stored type is not among the retiring types, so this is not the residual case"
   );
 
   assert.equal(
@@ -481,6 +494,7 @@ test("a completion fact built against another row reports stalled naming the fac
   const logged = logger.lines.warn.find(line => line.message.includes(`stalled on ${r1.rowHash}`));
   assert.ok(logged !== undefined, "the exhaustion was never logged");
   assert.equal(logged.data.completionType, Mirrored.Type);
+  assert.deepEqual([...logged.data.declaredTypes], [Mirrored.Type]);
   assert.equal(logged.data.completionHash, event.completionHash);
   assert.deepEqual(
     [...logged.data.retiringTypes].sort(),
@@ -490,7 +504,72 @@ test("a completion fact built against another row reports stalled naming the fac
   await worker.stop();
 });
 
-test("a failed event carries none of the three, because the handler produced no fact", { timeout: DEADLINE_MS }, async t => {
+test("a stalled report from a two-type consumer names the type the attempt stored", { timeout: DEADLINE_MS }, async t => {
+  // The handler decides `Rejected`, which is the second of the two declared
+  // types. `completionType` is read off the fact the attempt stored, so it says
+  // which decision was taken; a report that read the declaration instead could
+  // only name the set, or its first member.
+  const scene = await world();
+  const written = new Rejected(new Subject(scene.elsewhere, "r9"));
+  const handle = recordingHandler(async () => written);
+  const { worker, events, logger } = workerOver(t, scene, handle, {
+    sweepIntervalMs: 1,
+    consumer: { specification: reviewQueue, completes: [Approved, Rejected] }
+  });
+  const r1 = await reviewRow(scene.j, scene.acme, "r1");
+
+  await worker.start();
+
+  await until(() => events.length > 0, "the stalled row was never reported");
+  await quiesce();
+
+  const [event] = events;
+  assert.equal(event.kind, "stalled");
+  assert.equal(
+    event.completionType,
+    Rejected.Type,
+    "the event named a type other than the one the exhausting attempt stored"
+  );
+  assert.deepEqual(
+    [...event.declaredTypes].sort(),
+    [Approved.Type, Rejected.Type].sort(),
+    "declaredTypes did not name the types the consumer declared"
+  );
+  assert.deepEqual(
+    [...event.retiringTypes].sort(),
+    [Approved.Type, Rejected.Type].sort(),
+    "retiringTypes did not name the types the specification retires a row on"
+  );
+  // The residual case of §10.2 T2, as the event states it: the type that was
+  // stored is one the consumer declared and one the specification retires on,
+  // so the shape is right and the fact was written. Which row it points at is
+  // what is left to check.
+  assert.ok(
+    event.declaredTypes.includes(event.completionType),
+    "the stored type is not among the declared types"
+  );
+  assert.ok(
+    event.retiringTypes.includes(event.completionType),
+    "the stored type is not among the retiring types, so this is not the residual case"
+  );
+  assert.equal(
+    event.completionHash,
+    scene.j.hash(written),
+    "completionHash does not name the fact the handler returned"
+  );
+
+  const logged = logger.lines.warn.find(line => line.message.includes(`stalled on ${r1.rowHash}`));
+  assert.ok(logged !== undefined, "the exhaustion was never logged");
+  assert.equal(logged.data.completionType, Rejected.Type);
+  assert.deepEqual(
+    [...logged.data.declaredTypes].sort(),
+    [Approved.Type, Rejected.Type].sort()
+  );
+
+  await worker.stop();
+});
+
+test("a failed event carries none of the four, because the handler produced no fact", { timeout: DEADLINE_MS }, async t => {
   const scene = await world();
   const handle = recordingHandler(async () => {
     throw new Error("nope");
@@ -510,7 +589,7 @@ test("a failed event carries none of the three, because the handler produced no 
     [],
     "a fact was written though every attempt rejected"
   );
-  for (const member of ["completionType", "retiringTypes", "completionHash"]) {
+  for (const member of ["completionType", "declaredTypes", "retiringTypes", "completionHash"]) {
     assert.equal(
       member in event,
       false,

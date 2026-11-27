@@ -103,6 +103,13 @@ const outstandingWithQuarantine = model.given(Tenant).match((tenant, facts) =>
     .notExists(item => facts.ofType(ItemHandled).join(handled => handled.item, item))
     .notExists(item => facts.ofType(ItemQuarantined).join(held => held.item, item)));
 
+/** Two terminal decisions, either of which retires a row: decision 9's shape. */
+const outstandingDecisions = model.given(Tenant).match((tenant, facts) =>
+  facts.ofType(Item)
+    .join(item => item.tenant, tenant)
+    .notExists(item => facts.ofType(ItemHandled).join(handled => handled.item, item))
+    .notExists(item => facts.ofType(ItemArchived).join(archived => archived.item, item)));
+
 /** No condition at all, so nothing ever leaves the set. */
 const everyItem = model.given(Tenant).match((tenant, facts) =>
   facts.ofType(Item).join(item => item.tenant, tenant));
@@ -137,7 +144,7 @@ test("a specification with no notExists is rejected, naming that nothing retires
       name: "items",
       specification: everyItem,
       givens: [acme],
-      completes: ItemHandled,
+      completes: [ItemHandled],
       handle: completeWith(ItemHandled)
     }),
     error => {
@@ -155,7 +162,7 @@ test("a completes the specification does not exclude is rejected, naming both si
       name: "items",
       specification: outstanding,
       givens: [acme],
-      completes: ItemArchived,
+      completes: [ItemArchived],
       handle: completeWith(ItemArchived)
     }),
     error => {
@@ -174,12 +181,56 @@ test("a completes the specification does not exclude is rejected, naming both si
   );
 });
 
+test("a tuple of the two types the specification excludes is accepted, and both are declared", () => {
+  const consumer = defineConsumer({
+    name: "items",
+    specification: outstandingDecisions,
+    givens: [acme],
+    completes: [ItemHandled, ItemArchived],
+    handle: completeWith(ItemHandled)
+  });
+
+  assert.deepEqual(
+    [...consumer.declaredTypes].sort(),
+    [ItemArchived.Type, ItemHandled.Type].sort(),
+    "declaredTypes reads the whole tuple, not one type of it"
+  );
+});
+
+test("an undeclared completion type is rejected in each position of the tuple", () => {
+  // `outstanding` retires a row on ItemHandled alone, so ItemArchived is the
+  // undeclared one wherever it sits. Each position is checked in turn, so a
+  // check that read only the first would pass one of these and fail the other.
+  for (const completes of [[ItemArchived, ItemHandled], [ItemHandled, ItemArchived]]) {
+    const position = completes.indexOf(ItemArchived);
+    assert.throws(
+      () => defineConsumer({
+        name: "items",
+        specification: outstanding,
+        givens: [acme],
+        completes,
+        handle: completeWith(ItemHandled)
+      }),
+      error => {
+        assert.match(
+          error.message,
+          /completes Test\.Item\.Archived/,
+          `the message does not name the type at position ${position}`
+        );
+        assert.match(error.message, /retires a row on: Test\.Item\.Handled/);
+        return true;
+      },
+      `an undeclared type at position ${position} was accepted`
+    );
+  }
+});
+
 test("the section 4 pattern, with completion and quarantine both excluded, is accepted", () => {
   const consumer = defineConsumer({
     name: "items",
     specification: outstandingWithQuarantine,
     givens: [acme],
-    completes: ItemHandled,
+    completes: [ItemHandled],
     handle: completeWith(ItemHandled),
     quarantine: {
       produces: ItemQuarantined,
@@ -195,7 +246,7 @@ test("a notExists on a nested unknown is accepted when completes matches it", ()
     name: "tasks",
     specification: outstandingTasks,
     givens: [acme],
-    completes: TaskDone,
+    completes: [TaskDone],
     handle: async row => new TaskDone(row.result)
   });
 
@@ -212,7 +263,7 @@ test("a specification using exists rather than notExists is rejected", () => {
       name: "items",
       specification: handledItems,
       givens: [acme],
-      completes: ItemHandled,
+      completes: [ItemHandled],
       handle: completeWith(ItemHandled)
     }),
     /excludes no fact type at all/,
@@ -226,7 +277,7 @@ test("a quarantine group whose produces is not excluded is rejected", () => {
       name: "items",
       specification: outstanding,
       givens: [acme],
-      completes: ItemHandled,
+      completes: [ItemHandled],
       handle: completeWith(ItemHandled),
       quarantine: {
         produces: ItemQuarantined,

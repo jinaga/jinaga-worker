@@ -29,16 +29,18 @@ const waiting = (attempts, retryAt, firstAttemptAt = 100) => ({
   retryAt
 });
 
-const completed = (attempts, firstAttemptAt = 100, completionHash = "c1") => ({
+const completed = (attempts, firstAttemptAt = 100, completionHash = "c1", completionType = "T") => ({
   phase: "completed",
   row: row("r"),
   attempts,
   firstAttemptAt,
-  completionHash
+  completionHash,
+  completionType
 });
 
-// The hash the caller read off the write it just performed.
-const resolved = (completionHash = "c1") => ({ kind: "resolved", completionHash });
+// The hash and the type the caller read off the write it just performed.
+const resolved = (completionHash = "c1", completionType = "T") =>
+  ({ kind: "resolved", completionHash, completionType });
 
 const quarantined = () => ({ phase: "quarantined", row: row("r") });
 
@@ -66,7 +68,8 @@ const table = [
       row: row("r"),
       attempts: 2,
       firstAttemptAt: 100,
-      completionHash: "c1"
+      completionHash: "c1",
+      completionType: "T"
     }
   },
   {
@@ -169,16 +172,18 @@ test("transition: completed suppresses a stream addition, since the sweep decide
 test("a row re-dispatched by a sweep carries the completion hash of its latest attempt", () => {
   const rows = new Map();
   applyRowEvent(rows, "r", { kind: "added", row: row("r"), at: 100 });
-  applyRowEvent(rows, "r", resolved("first"));
+  applyRowEvent(rows, "r", resolved("first", "First"));
   applyRowEvent(rows, "r", { kind: "swept", row: row("r"), at: 500, maxAttempts: MAX });
 
-  // `dispatching` carries no hash, so the fact of an earlier attempt cannot
+  // `dispatching` carries neither, so the fact of an earlier attempt cannot
   // survive into the report for a later one.
   assert.equal("completionHash" in rows.get("r"), false);
+  assert.equal("completionType" in rows.get("r"), false);
 
-  applyRowEvent(rows, "r", resolved("second"));
+  applyRowEvent(rows, "r", resolved("second", "Second"));
 
   assert.equal(rows.get("r").completionHash, "second");
+  assert.equal(rows.get("r").completionType, "Second");
 });
 
 test("the map holds no entry for a row that was never discovered", () => {
