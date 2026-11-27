@@ -1,26 +1,23 @@
-import { invertSpecification, Specification } from "jinaga";
+import { Specification, exactInverses, pinLabel } from "jinaga";
 
 /**
  * The fact types that can take a row out of an outstanding set.
  *
- * A specification shrinks only where inverting it yields a `remove`, and a
- * remove inverse is produced exactly by a condition whose `exists` is false.
- * The types that retire a row are therefore the givens of those inverses:
- * assert a fact of one of them against the predecessor the condition reads, and
- * the row leaves the set.
+ * A type retires a row when a fact of it can make a condition on the row false:
+ * the witness of a `notExists`, and the inner type of an `exists { notExists }`.
  *
- * A positive `exists` therefore yields nothing: it gates which rows enter the
- * set rather than completing one, so it inverts to an add. Depth does not
- * matter either — a condition on a nested unknown, or on an outer hop, yields
- * its type the same way as one at the top level.
- *
- * Inversion is memoized on the specification's structure, so this call warms
- * the entry `subscribeRows` then hits.
+ * The proved inverter answers that question directly. Each of its `removes` is
+ * the specification the row stream runs when such a fact arrives, and the
+ * arriving fact is the given labelled `pinLabel`, so that given's type is the
+ * type that retires the row. A type two conditions can retire a row on is one
+ * type, so the set holds it once.
  */
 export function retiringTypes(specification: Specification): string[] {
-    return invertSpecification(specification)
-        .filter(inverse => inverse.operation === "remove")
-        .flatMap(inverse => inverse.inverseSpecification.given.map(given => given.label.type));
+    const pinned = exactInverses(specification).removes.flatMap(remove =>
+        remove.given
+            .filter(given => given.label.name === pinLabel)
+            .map(given => given.label.type));
+    return [...new Set(pinned)];
 }
 
 /**
