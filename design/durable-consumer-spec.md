@@ -622,6 +622,87 @@ as `failed` carrying the rejection (§3.7). A denial on the quarantine leaves th
 row quarantined in memory only, logged at step 2 of §3.6, so the next process
 attempts it again.
 
+### 4.7 Name the premises of a completion
+
+A consumer's specification usually carries a `notExists`, and on a replica a
+`notExists` is provisional: the fact that would have excluded the row may exist
+somewhere this replica has not heard from. The handler decides anyway, and the
+completion fact it writes is permanent. So the completion fact records what the
+decision rested on.
+
+**A completion fact takes as predecessors the facts bound by the row's
+positive-polarity matches that a later fact can overturn the decision through.**
+A tenant is frozen while a `TenantFrozen` carries no `TenantFreezeLifted`, and
+an invitation to a frozen tenant is withdrawn rather than mirrored. The
+`TenantFrozen` is the premise. A `TenantFreezeLifted` that arrives afterwards is
+a successor of that exact fact, so naming the premise in the withdrawal puts the
+contradiction one hop from the decision: visible in history, and selectable by a
+compensating specification.
+
+```ts
+class TenantFrozen {
+    static Type = "Blog.Tenant.Frozen" as const;
+    type = TenantFrozen.Type;
+    constructor(public tenant: Tenant, public frozenAt: Date) {}
+}
+
+class TenantFreezeLifted {
+    static Type = "Blog.Tenant.Frozen.Lifted" as const;
+    type = TenantFreezeLifted.Type;
+    constructor(public frozen: TenantFrozen) {}
+}
+
+class InvitationWithdrawn {
+    static Type = "Blog.Invitation.Withdrawn" as const;
+    type = InvitationWithdrawn.Type;
+    constructor(
+        public invitation: Invitation,
+        public frozen: TenantFrozen
+    ) {}
+}
+```
+
+The premise has to reach the handler, so the specification binds it as a label
+and projects it beside the row's own fact:
+
+```ts
+const invitationsToWithdraw = model.given(Tenant).match((tenant, facts) =>
+    facts.ofType(TenantFrozen)
+        .join(frozen => frozen.tenant, tenant)
+        .notExists(frozen => facts.ofType(TenantFreezeLifted)
+            .join(lifted => lifted.frozen, frozen))
+        .selectMany(frozen => facts.ofType(Invitation)
+            .join(invitation => invitation.tenant, tenant)
+            .notExists(invitation => facts.ofType(InvitationWithdrawn)
+                .join(withdrawn => withdrawn.invitation, invitation))
+            .select(invitation => ({ invitation, frozen })))
+);
+
+handle: async row =>
+    new InvitationWithdrawn(row.result.invitation, row.result.frozen)
+```
+
+**An absence is not a predecessor.** A top-level `notExists` witness — the
+`TenantFreezeLifted` above — is already a successor of the row's own facts, so a
+compensating specification selects it with no new predecessors. There is nothing
+to model for an absence and no placeholder to stand in for one.
+
+**A decision that must be unique needs a single writer that serializes
+decisions.** An authorization rule decides who may write a fact, not how many
+get written: the same principal on two replicas, or a retry after a timeout,
+writes two facts and both are authorized.
+
+**Naming premises has a cost.** Two attempts that saw different premises write
+different facts, so content addressing no longer collapses the duplicate
+dispatch §3.3 and §3.4 name.
+
+**The handler's outcome is a function of what it read.** A handler whose
+consumer declares more than one completion type returns the same type on every
+attempt for the same row and the same premises. Otherwise a re-run of one row
+stores `ApplicationRejected` after `ApplicationApproved` is already in the
+store; both facts are permanent, the row stays retired, and its history carries
+two contradictory decisions.
+
 ---
 
 ## 5. Constraints inherited from jinaga
@@ -845,6 +926,12 @@ Settled after the RFC, in the order they were taken:
     order across saves: nothing schedules two saves whose re-checks overlap
     (jinaga/jinaga.js#361), so the stale addition of §3.3 remains, by that
     route alone.
+11. **Rows come from the replica's own graph; negation across replicas is the
+    application's.** The library offers the rows a read of this replica's graph
+    returns, and asserts the fact the handler builds from them. It does not
+    reconcile a `notExists` against a replica it has not heard from. Naming the
+    premises a decision rested on, and choosing a single writer where a decision
+    must be unique, are the application's (§4.7).
 
 ---
 
