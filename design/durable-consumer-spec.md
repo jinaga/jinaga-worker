@@ -795,7 +795,7 @@ Settled after the RFC, in the order they were taken:
    ```
 
    A single type is spelled `[X]`, so there is one spelling for any number of
-   types (Art. 3, §10.1 question 3). `completes` is the only place `C` is
+   types (Art. 4, §10.1 question 3). `completes` is the only place `C` is
    inferred from. `NoInfer` keeps `handle`'s return out of inference, so a
    handler that returns a fact outside the declared set is a compile error
    whether or not the caller writes the type arguments. An empty tuple, a
