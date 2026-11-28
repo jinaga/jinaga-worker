@@ -404,7 +404,7 @@ test("the inner type of a notExists over a notExists is rejected, naming what re
   );
 });
 
-test("a type that two conditions can retire a row on is reported once", () => {
+test("each retiring type is reported once, however many conditions the specification has", () => {
   const consumer = defineConsumer({
     name: "items",
     specification: outstandingWithQuarantine,
