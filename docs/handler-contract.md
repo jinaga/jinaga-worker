@@ -74,6 +74,82 @@ the worker's principal, say — is a rejection of the attempt. It spends an
 attempt, the row is retried on backoff, and after `maxAttempts` the worker
 reports `failed` carrying the refusal.
 
+## Name the premises of a completion
+
+The `notExists` in your specification is what takes a row out of the outstanding
+set, and on a replica an absence is provisional: the fact that would have
+excluded the row may exist somewhere this replica has not heard from. Your
+handler decides anyway, and the fact it returns is permanent. So name what the
+decision rested on.
+
+Take a tenant that is frozen while a `TenantFrozen` carries no
+`TenantFreezeLifted`, and an invitation to a frozen tenant that is withdrawn
+rather than mirrored. The `TenantFrozen` is the premise, and the withdrawal
+takes it as a predecessor:
+
+```ts
+class TenantFrozen {
+    static Type = "Blog.Tenant.Frozen" as const;
+    type = TenantFrozen.Type;
+    constructor(public tenant: Tenant, public frozenAt: Date) {}
+}
+
+class TenantFreezeLifted {
+    static Type = "Blog.Tenant.Frozen.Lifted" as const;
+    type = TenantFreezeLifted.Type;
+    constructor(public frozen: TenantFrozen) {}
+}
+
+class InvitationWithdrawn {
+    static Type = "Blog.Invitation.Withdrawn" as const;
+    type = InvitationWithdrawn.Type;
+    constructor(
+        public invitation: Invitation,
+        public frozen: TenantFrozen
+    ) {}
+}
+```
+
+A `TenantFreezeLifted` that arrives afterwards is a successor of the exact fact
+your withdrawal names, so the contradiction sits one hop from the decision:
+history shows it, and a compensating consumer selects it. Name the positive
+facts your conditions bind, the ones a later fact can overturn the decision
+through. An absence is not a predecessor — the `TenantFreezeLifted` above is
+already a successor of the row's own facts — so there is nothing to model for
+one.
+
+The premise has to reach your handler, so the specification binds it as a label
+and projects it beside the row's own fact:
+
+```ts
+const invitationsToWithdraw = model.given(Tenant).match((tenant, facts) =>
+    facts.ofType(TenantFrozen)
+        .join(frozen => frozen.tenant, tenant)
+        .notExists(frozen => facts.ofType(TenantFreezeLifted)
+            .join(lifted => lifted.frozen, frozen))
+        .selectMany(frozen => facts.ofType(Invitation)
+            .join(invitation => invitation.tenant, tenant)
+            .notExists(invitation => facts.ofType(InvitationWithdrawn)
+                .join(withdrawn => withdrawn.invitation, invitation))
+            .select(invitation => ({ invitation, frozen })))
+);
+
+handle: async row =>
+    new InvitationWithdrawn(row.result.invitation, row.result.frozen)
+```
+
+Two consequences come with it:
+
+- **A subject that more than one premise satisfies is offered once per
+  premise.** The premise is a label of the row, so each of those rows can write
+  a decision for the subject. A handler that reads a premise outside
+  `row.result` can also write a different fact on a repeat of one row, which
+  content addressing does not collapse.
+- **A premise does not make a decision unique.** An authorization rule decides
+  who may write a fact, not how many get written: the same principal on two
+  replicas, or a retry after a timeout, writes two and both are authorized.
+  Uniqueness needs a single writer that serializes decisions.
+
 ## The handler must be idempotent
 
 A row can be dispatched to your handler more than once, and two dispatches of
@@ -95,8 +171,14 @@ already complete.
 
 So make the handler safe to run twice:
 
-- The completion fact is already idempotent. Facts are content-addressed, so
-  asserting the same one twice stores one fact.
+- Return the same completion type for the same row.
+  Content addressing makes a repeated fact harmless only when the attempt
+  repeats it. A handler that can return more than one type and takes the other
+  decision on a second run stores a second permanent fact, and the row's
+  history then carries two contradictory decisions. What this asks of you is one
+  decision, not one fact: a second attempt that fills a field differently, with
+  a timestamp of its own, writes another fact of the type it already chose, and
+  the row stays retired on that decision.
 - Give every write outside the graph a key. `row.rowHash` identifies the row,
   and an upsert on it turns a second run into a no-op.
 - Do not treat "I already did this" as an error. A second run that finds its
