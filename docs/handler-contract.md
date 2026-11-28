@@ -140,9 +140,11 @@ handle: async row =>
 
 Two consequences come with it:
 
-- **Two attempts that saw different premises write different facts.** Content
-  addressing no longer folds a repeated dispatch of one row into a single fact,
-  which is part of why the handler has to be idempotent.
+- **A subject that more than one premise satisfies is offered once per
+  premise.** The premise is a label of the row, so each of those rows can write
+  a decision for the subject. A handler that reads a premise outside
+  `row.result` can also write a different fact on a repeat of one row, which
+  content addressing does not collapse.
 - **A premise does not make a decision unique.** An authorization rule decides
   who may write a fact, not how many get written: the same principal on two
   replicas, or a retry after a timeout, writes two and both are authorized.
@@ -169,7 +171,7 @@ already complete.
 
 So make the handler safe to run twice:
 
-- Return the same completion type for the same row and the same premises.
+- Return the same completion type for the same row.
   Content addressing makes a repeated fact harmless only when the attempt
   repeats it. A handler that can return more than one type and takes the other
   decision on a second run stores a second permanent fact, and the row's

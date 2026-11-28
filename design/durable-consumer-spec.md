@@ -692,15 +692,17 @@ decisions.** An authorization rule decides who may write a fact, not how many
 get written: the same principal on two replicas, or a retry after a timeout,
 writes two facts and both are authorized.
 
-**Naming premises has a cost.** Two attempts that saw different premises write
-different facts, so content addressing no longer collapses the duplicate
-dispatch §3.3 and §3.4 name.
+**Naming premises has a cost.** The premise is a label of the row, so a subject
+that more than one premise satisfies is offered once per premise, and each of
+those rows can write a decision for it. A handler that reads a premise outside
+`row.result` can also write a different fact on a repeat of one row, which
+content addressing does not collapse.
 
 **The handler's outcome is a function of what it read.** A handler whose
 consumer declares more than one completion type returns the same type on every
-attempt for the same row and the same premises. Otherwise a re-run of one row
-stores `ApplicationRejected` after `ApplicationApproved` is already in the
-store; both facts are permanent, the row stays retired, and its history carries
+attempt for the same row. Otherwise a re-run of one row stores
+`ApplicationRejected` after `ApplicationApproved` is already in the store; both
+facts are permanent, the row stays retired, and its history carries
 two contradictory decisions. The requirement is on the decision rather than on
 the fact's content: two attempts that write one type with different fields leave
 one decision on the record, which is what §3.3 already expects of
