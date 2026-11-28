@@ -4,7 +4,7 @@ import { Limiter } from "./limiter";
 import { Logger } from "./logger";
 import { NoProgressEvent } from "./no-progress";
 import { backoffMs } from "./retry";
-import { applyRowEvent, countRows, RowEvent, RowStateMap } from "./row-state";
+import { applyRowEvent, countRows, RowEvent, RowState, RowStateMap } from "./row-state";
 import { ConsumerStatus } from "./status";
 import { withTimeout } from "./timeout";
 
@@ -44,12 +44,23 @@ export class ConsumerRuntime {
     private sweepFailures = 0;
 
     /**
-     * The pass that has not settled yet, and when it started. One field does
-     * both jobs: a tick reads it to decide whether to start a pass, and
-     * `status()` reports it, so what the timer acts on and what an operator
-     * sees cannot disagree.
+     * The pass that has not settled yet: when it started, and the rows whose
+     * entries have been written since. One field does all three jobs — a tick
+     * reads it to decide whether to start a pass, `status()` reports when that
+     * pass began, and the pass withholds its verdict from the rows it names —
+     * so what the timer acts on, what an operator sees, and what the verdict
+     * covers cannot disagree. A record of writes with no pass to apply it to is
+     * not a state the problem contains, so the set lives and dies with the pass.
+     *
+     * It holds one key per row whose entry changed while the read was in
+     * flight, the rows that left during it included, because those are the ones
+     * a stale read would otherwise admit as new. So it costs the churn of one
+     * read rather than the outstanding set, and the pass releases it on every
+     * exit. A read that never settles is the case where that churn has no end,
+     * and it is already the case where no later pass reads at all (§3.2), which
+     * is what this field's age reports to an operator (§2.4).
      */
-    private sweepInFlight: { since: Date } | undefined;
+    private sweepInFlight: { since: Date; written: Set<string> } | undefined;
 
     /**
      * Where this consumer is in the arc of discovery. Three situations, one
@@ -155,9 +166,16 @@ export class ConsumerRuntime {
      * the read began and the read did not return is retracted. That retraction
      * is how a `completed` row is released without a removal notification.
      *
-     * The rows the map gained while the read was in flight are not in its
-     * verdict: the read is a snapshot of the moment it was taken, and a row
-     * discovered after it was taken was never omitted from it.
+     * A pass's verdict covers only the rows whose entries stood still while its
+     * read was in flight. The read is a snapshot of the moment it was taken: a
+     * row the map gained after that moment was never omitted from it, and a row
+     * whose entry was written since is one the read describes as it no longer
+     * is — a completion stored behind the read leaves it returning a row it
+     * never saw complete, and a re-admission behind the read leaves it omitting
+     * a row that is outstanding again. Either way the entry is left as it
+     * stands, and the next pass decides it from a read that began after the
+     * change (§3.3). `written` on the pending pass is that record, and it is
+     * released with the pass.
      *
      * A sweep reports its own failure and settles either way, so the timer that
      * schedules it has no rejection to handle and one pass that fails does not
@@ -179,7 +197,8 @@ export class ConsumerRuntime {
         }
         const held = new Set(this.rows.keys());
         const at = Date.now();
-        this.sweepInFlight = { since: new Date(at) };
+        const pass = { since: new Date(at), written: new Set<string>() };
+        this.sweepInFlight = pass;
         try {
             const rows = await this.consumer.query(this.j);
             if (!this.discovering) {
@@ -189,15 +208,19 @@ export class ConsumerRuntime {
             }
             for (const row of rows) {
                 held.delete(row.rowHash);
-                this.offer(row.rowHash, {
-                    kind: "swept",
-                    row,
-                    at,
-                    maxAttempts: this.consumer.retry.maxAttempts
-                });
+                if (!pass.written.has(row.rowHash)) {
+                    this.offer(row.rowHash, {
+                        kind: "swept",
+                        row,
+                        at,
+                        maxAttempts: this.consumer.retry.maxAttempts
+                    });
+                }
             }
             for (const rowHash of held) {
-                this.offer(rowHash, { kind: "removed" });
+                if (!pass.written.has(rowHash)) {
+                    this.offer(rowHash, { kind: "removed" });
+                }
             }
             this.lastSweep = { at: new Date(at), size: rows.length };
             this.sweepFailures = 0;
@@ -244,9 +267,28 @@ export class ConsumerRuntime {
         for (const [rowHash, state] of this.rows) {
             if (state.phase === "waiting") {
                 this.cancelRetry(rowHash);
-                applyRowEvent(this.rows, rowHash, { kind: "removed" });
+                this.write(rowHash, { kind: "removed" });
             }
         }
+    }
+
+    /**
+     * Write a row's transition to the map, and record it against the pass that
+     * is reading.
+     *
+     * A pass's verdict is a function of its read together with the writes made
+     * while that read was in flight, and `applyRowEvent` is the one place the
+     * map is written, so this is where the second half of that verdict is
+     * collected. An event the table answers with the entry it was given writes
+     * nothing, and records nothing.
+     */
+    private write(rowHash: string, event: RowEvent<unknown>): RowState<unknown> | undefined {
+        const previous = this.rows.get(rowHash);
+        const next = applyRowEvent(this.rows, rowHash, event);
+        if (next !== previous) {
+            this.sweepInFlight?.written.add(rowHash);
+        }
+        return next;
     }
 
     /**
@@ -260,7 +302,7 @@ export class ConsumerRuntime {
      */
     private offer(rowHash: string, event: RowEvent<unknown>): Promise<void> | undefined {
         const previous = this.rows.get(rowHash);
-        const next = applyRowEvent(this.rows, rowHash, event);
+        const next = this.write(rowHash, event);
         if (next === undefined) {
             // The row left the outstanding set, so the retry it was due has
             // nothing left to re-attempt.
@@ -362,7 +404,7 @@ export class ConsumerRuntime {
         if (current()) {
             // The hash is taken from the write's own answer, so it names the
             // fact the store holds rather than the prototype offered to it.
-            applyRowEvent(this.rows, rowHash, {
+            this.write(rowHash, {
                 kind: "resolved",
                 completionHash: this.j.hash(completion)
             });
@@ -388,7 +430,7 @@ export class ConsumerRuntime {
             `${this.consumer.name}: attempt ${state.attempts} failed for ${rowHash}`,
             { consumer: this.consumer.name, rowHash, attempts: state.attempts, error }
         );
-        const next = applyRowEvent(this.rows, rowHash, {
+        const next = this.write(rowHash, {
             kind: "rejected",
             retryAt: Date.now() + backoffMs(this.consumer.retry, state.attempts),
             maxAttempts: this.consumer.retry.maxAttempts
@@ -403,7 +445,7 @@ export class ConsumerRuntime {
         if (!this.discovering) {
             // Discovery has ended, so nothing will offer this row again. Drop
             // it as `stop()` drops the rows already waiting.
-            applyRowEvent(this.rows, rowHash, { kind: "removed" });
+            this.write(rowHash, { kind: "removed" });
             return;
         }
         // The wait is read from the state that records it, so the row is
@@ -542,7 +584,7 @@ export class ConsumerRuntime {
             dropped: this.stream?.dropped ?? 0,
             ...(this.sweepInFlight === undefined
                 ? {}
-                : { sweepInFlight: this.sweepInFlight }),
+                : { sweepInFlight: { since: this.sweepInFlight.since } }),
             sweepFailures: this.sweepFailures,
             ...(this.lastSweep === undefined ? {} : { lastSweep: this.lastSweep }),
             ...(this.lastSweepFailure === undefined
