@@ -431,16 +431,15 @@ it when the row leaves. A `removed` change is the exact acknowledgement — but 
 advisory one, since removals dispatch through the same abandonable listener path
 as additions. Nothing waits on it.
 
-It is advisory in a second way. Notifications are unordered (§5), so one save
-that carries both a row's source fact and its completion fact produces an
-`added` and a `removed` whose arrival order is undefined; a feed catch-up after
-a restart delivers exactly that graph. When the `removed` arrives first it
-clears the entry, and the `added` behind it finds no entry and is admitted.
-Handler idempotence is what makes that safe, and this is the second source of
-duplicate dispatch alongside the abandoned timeout of §3.4. The same sequence
-can re-admit a `quarantined` row, because `removed` clears from any phase:
-suppression holds against the sweep, which is the operational path, and a stale
-addition costs one further attempt.
+It is advisory in a second way. Nothing orders changes across two saves whose
+re-checks overlap (§5): the first save's re-check can read before the second
+save lands, the second's re-check emits `removed`, and the first save's `added`
+arrives behind it. The `removed` clears the entry, and the `added` behind it
+finds no entry and is admitted. Handler idempotence is what makes that safe,
+and this is the second source of duplicate dispatch alongside the abandoned
+timeout of §3.4. The same sequence can re-admit a `quarantined` row, because
+`removed` clears from any phase: suppression holds against the sweep, which is
+the operational path, and a stale addition costs one further attempt.
 
 ### 3.4 Dispatch
 
@@ -636,19 +635,20 @@ its documentation must carry, because every one of them is silent when violated.
 - **Purge conditions are checked on every read and subscribe.** A specification
   over a purgeable fact type must carry the purge condition's `notExists`, or
   every sweep throws.
-- **Notifications are unordered, and the store is complete before any of them
-  runs.** `ObservableSource.notify` fans out with `Promise.all` and discards the
-  topological order the envelopes arrive in (a KNOWN GAP comment in
-  `observable.js`). Two facts about where it sits make that safe here.
-  `FactManager.save` persists the whole batch before it calls `notify`, and each
-  listener re-reads storage — `store.read([givenReference], specification)` — so
-  every notification sees every fact of the batch whatever the delivery order.
-  A row therefore reaches the stream complete, at the moment its last
-  constituent fact is saved, and the order decides only which of two redundant
-  deliveries lands first. This loop is order-insensitive by construction rather
-  than by compensation. Still, never infer "the parent completed before this
-  child appeared" from delivery order, and see §3.3 for the one place the
-  absence of order is visible to the row-state map.
+- **Each change is a transition of the result, decided one save at a time, and
+  nothing is ordered across saves.** A change is decided by reading the result
+  from the replica's own graph, so after one save's notifications, when no other
+  save's re-check overlaps them, the rows the stream has offered and not
+  withdrawn are exactly what a read returns. Within one save the delivery order
+  decides nothing, and a row whose source fact and completion fact arrive in the
+  same save is in the result at neither boundary, so that save produces no change
+  for it. Across two saves whose re-checks
+  overlap there is no order: the first save's re-check can read before the
+  second save lands, so an `added` can arrive behind the `removed` that retired
+  its row. This loop is order-insensitive by construction rather than by
+  compensation. Still, never infer "the parent completed before this child
+  appeared" from delivery order, and see §3.3 for the one place the absence of
+  order is visible to the row-state map.
 - **Nested projections are not observed.** Only root-path inverses are
   registered, so a projected collection is a snapshot from when the row's own
   notification fired. Do not project a collection a handler needs current; make
@@ -837,6 +837,15 @@ Settled after the RFC, in the order they were taken:
 
    That slice deletes this list and both illustrations once their content is
    in place.
+10. **The jinaga floor carries the row stream's contract.** `package.json`
+    declares the floor. What the floor buys is the row stream that decides
+    every change by reading the result, which jinaga/jinaga.js#336 landed and
+    jinaga 6.15.0 was the first release to carry. That is what lets §5 state
+    the contract as a per-save transition of the result, and it is why a save
+    carrying both a row's source fact and its completion fact produces no
+    change for that row. The floor buys no order across saves: nothing
+    schedules two saves whose re-checks overlap (jinaga/jinaga.js#361), so the
+    stale addition of §3.3 remains, by that route alone.
 
 ---
 

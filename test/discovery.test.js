@@ -327,6 +327,47 @@ test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE
   await worker.stop();
 });
 
+test("a save that carries a row's completion offers the handler nothing", { timeout: DEADLINE_MS }, async t => {
+  const { j, acme } = await world();
+
+  const handle = recordingHandler();
+  const worker = createWorker(j, {
+    consumers: [
+      defineConsumer({
+        name: "items",
+        specification: outstanding,
+        givens: [acme],
+        completes: Mirrored,
+        handle
+      })
+    ],
+    logger: silentLogger
+  });
+  t.after(() => worker.stop());
+
+  await worker.start();
+
+  // One save carrying both a subject and the fact that retires it: the
+  // completion's predecessor is the new subject, so the whole graph is
+  // persisted in one batch. The row is outstanding at neither boundary of that
+  // save, and the stream reads the result to decide a change, so it decides
+  // none for this row.
+  await j.fact(new Mirrored(new Subject(acme, "retired-on-arrival")));
+
+  // The row this consumer does handle is the condition the absence is read
+  // after, so the assertion runs once the stream has delivered past the save
+  // above rather than after a delay the test chose.
+  await j.fact(new Subject(acme, "outstanding"));
+  await handle.reaching(1);
+  await quiesce();
+
+  assert.deepEqual(
+    handle.handled.map(rowValue => rowValue.result.key),
+    ["outstanding"],
+    "the row its own save retired was offered for dispatch"
+  );
+});
+
 test("the backstop sweep reads the outstanding set through queryRows", { timeout: DEADLINE_MS }, async t => {
   const { j, acme } = await world();
   await j.fact(new Subject(acme, "outstanding"));

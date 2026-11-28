@@ -86,12 +86,12 @@ and the handler keeps running. The abandoned attempt counts as a rejection, the
 row goes to `waiting`, and the next attempt starts while the first one is still
 in flight. Two runs of your handler for one row overlap, in the same process.
 
-**A stale addition.** Notifications are unordered. One save that carries both a
-row's source fact and its completion fact produces an `added` change and a
-`removed` change whose arrival order is undefined, and a feed catch-up after a
-restart delivers exactly that graph. When the `removed` lands first it clears
-the row from the consumer's map, and the `added` behind it finds no entry and is
-admitted. Your handler runs again for a row that is already complete.
+**A stale addition.** Nothing orders changes across two saves whose re-checks
+overlap. The first save's re-check can read before the second save lands, the
+second's re-check emits `removed`, and the first save's `added` arrives behind
+it. The `removed` clears the row from the consumer's map, and the `added` behind
+it finds no entry and is admitted. Your handler runs again for a row that is
+already complete.
 
 So make the handler safe to run twice:
 
