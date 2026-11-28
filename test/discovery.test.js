@@ -244,7 +244,7 @@ function workerOver(t, scene, stream, query, handle, options = {}) {
           name: "invitations",
           specification: outstanding,
           givens: [scene.acme],
-          completes: Mirrored,
+          completes: [Mirrored],
           handle,
           sweepIntervalMs: SWEEP_INTERVAL_MS,
           ...options
@@ -291,7 +291,7 @@ test("delivers the backlog and later arrivals exactly once", { timeout: DEADLINE
         name: "items",
         specification: outstanding,
         givens: [acme],
-        completes: Mirrored,
+        completes: [Mirrored],
         handle
       })
     ],
@@ -337,7 +337,7 @@ test("a save that carries a row's completion offers the handler nothing", { time
         name: "items",
         specification: outstanding,
         givens: [acme],
-        completes: Mirrored,
+        completes: [Mirrored],
         handle
       })
     ],
@@ -382,7 +382,7 @@ test("the backstop sweep reads the outstanding set through queryRows", { timeout
         name: "items",
         specification: outstanding,
         givens: [acme],
-        completes: Mirrored,
+        completes: [Mirrored],
         handle,
         sweepIntervalMs: 1
       })

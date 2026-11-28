@@ -10,6 +10,10 @@ const { buildModel, JinagaTest, MemoryStore } = require("jinaga");
  * group returns `Quarantined`. The specification excludes both, so a row
  * leaves the set when either lands.
  *
+ * `reviewQueue` is the same shape with two terminal *decisions* rather than one
+ * decision and one failure: a subject leaves it when it is approved and when it
+ * is rejected, so a consumer over it declares both types in `completes`.
+ *
  * Every test drives this model on a real in-memory instance: the rows a
  * consumer sees are the ones the store answers with, their `rowHash` is the
  * one jinaga computed, and a completion fact's hash is `j.hash` of the fact
@@ -43,6 +47,26 @@ class Mirrored {
 }
 Mirrored.Type = "Test.Subject.Mirrored";
 
+/**
+ * The two terminal decisions of a review queue. Either retires its row, and a
+ * handler returns whichever one the row earned.
+ */
+class Approved {
+  constructor(subject) {
+    this.type = Approved.Type;
+    this.subject = subject;
+  }
+}
+Approved.Type = "Test.Subject.Approved";
+
+class Rejected {
+  constructor(subject) {
+    this.type = Rejected.Type;
+    this.subject = subject;
+  }
+}
+Rejected.Type = "Test.Subject.Rejected";
+
 /** What a quarantine group records about a row it has given up on. */
 class Quarantined {
   constructor(subject, reason) {
@@ -57,6 +81,8 @@ const model = buildModel(b => b
   .type(Tenant)
   .type(Subject, f => f.predecessor("tenant", Tenant))
   .type(Mirrored, f => f.predecessor("subject", Subject))
+  .type(Approved, f => f.predecessor("subject", Subject))
+  .type(Rejected, f => f.predecessor("subject", Subject))
   .type(Quarantined, f => f.predecessor("subject", Subject)));
 
 /** The outstanding set: a tenant's subjects that are neither mirrored nor given up on. */
@@ -65,6 +91,20 @@ const outstanding = model.given(Tenant).match((tenant, facts) =>
     .join(subject => subject.tenant, tenant)
     .notExists(subject => facts.ofType(Mirrored).join(mirrored => mirrored.subject, subject))
     .notExists(subject => facts.ofType(Quarantined).join(given => given.subject, subject)));
+
+/** A review queue: a tenant's subjects that have been neither approved nor rejected. */
+const reviewQueue = model.given(Tenant).match((tenant, facts) =>
+  facts.ofType(Subject)
+    .join(subject => subject.tenant, tenant)
+    .notExists(subject => facts.ofType(Approved).join(approved => approved.subject, subject))
+    .notExists(subject => facts.ofType(Rejected).join(rejected => rejected.subject, subject)));
+
+/** The decisions of each type the store holds for one tenant's subjects. */
+const approvalsOf = model.given(Tenant).match((tenant, facts) =>
+  facts.ofType(Approved).join(approved => approved.subject.tenant, tenant));
+
+const rejectionsOf = model.given(Tenant).match((tenant, facts) =>
+  facts.ofType(Rejected).join(rejected => rejected.subject.tenant, tenant));
 
 /** The completion facts the store holds for one tenant's subjects. */
 const completionsOf = model.given(Tenant).match((tenant, facts) =>
@@ -93,15 +133,18 @@ async function world(config = {}) {
  * Write a subject and return the row the specification gives it. Its `rowHash`
  * is jinaga's own, so a test names a row the way the consumer sees it.
  */
-async function outstandingRow(j, tenant, key) {
+async function outstandingRow(j, tenant, key, specification = outstanding) {
   await j.fact(new Subject(tenant, key));
-  const rows = await j.queryRows(outstanding, tenant);
+  const rows = await j.queryRows(specification, tenant);
   const row = rows.find(candidate => candidate.result.key === key);
   if (row === undefined) {
     throw new Error(`${key} is not in the outstanding set`);
   }
   return row;
 }
+
+/** The same, for the review queue's two-decision shape. */
+const reviewRow = (j, tenant, key) => outstandingRow(j, tenant, key, reviewQueue);
 
 /** The hashes of the facts one of those specifications reads. */
 async function hashesOf(j, specification, tenant) {
@@ -155,12 +198,18 @@ module.exports = {
   Tenant,
   Subject,
   Mirrored,
+  Approved,
+  Rejected,
   Quarantined,
   outstanding,
+  reviewQueue,
   completionsOf,
+  approvalsOf,
+  rejectionsOf,
   quarantinesOf,
   world,
   outstandingRow,
+  reviewRow,
   hashesOf,
   gatedStore,
   driving

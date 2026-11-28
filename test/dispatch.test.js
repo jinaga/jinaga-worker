@@ -11,16 +11,22 @@ const {
 const { WorkerHost } = require("../dist/worker.js");
 const { backoffMs } = require("../dist/retry.js");
 const {
+  Approved,
   Mirrored,
   Quarantined,
+  Rejected,
   Subject,
   Tenant,
+  approvalsOf,
   completionsOf,
   driving,
   gatedStore,
   hashesOf,
   outstanding,
   outstandingRow,
+  rejectionsOf,
+  reviewQueue,
+  reviewRow,
   world
 } = require("./outstanding-model.js");
 
@@ -142,7 +148,7 @@ function workerOver(t, j, consumers, options = {}) {
     name,
     specification: outstanding,
     givens: [tenant],
-    completes: Mirrored,
+    completes: [Mirrored],
     handle,
     sweepIntervalMs: 60_000,
     ...rest
@@ -310,6 +316,55 @@ test("an assertion the store refuses takes the retry path", { timeout: DEADLINE_
   assert.deepEqual(await hashesOf(j, completionsOf, acme), [], "a refused write reached the store");
   assert.equal(phaseOf(rowsOf("items"), r1.rowHash), "quarantined");
   assert.equal(worker.status().consumers[0].completed, 0, "a row completed on a fact the store refused");
+
+  await worker.stop();
+});
+
+// ---------------------------------------------------------------------------
+// Two terminal decisions, either of which retires its row.
+// ---------------------------------------------------------------------------
+
+test("retires one row through each declared completion type", { timeout: DEADLINE_MS }, async t => {
+  // The review queue of decision 9: the specification excludes both decisions,
+  // the consumer declares both, and the handler returns whichever one the row
+  // earned. Each row leaves the set through its own condition.
+  const { j, acme } = await world();
+  const handle = recordingHandler(async rowValue => rowValue.result.key === "r1"
+    ? new Approved(rowValue.result)
+    : new Rejected(rowValue.result));
+  const { worker } = workerOver(t, j, [{
+    name: "review",
+    tenant: acme,
+    handle,
+    specification: reviewQueue,
+    completes: [Approved, Rejected]
+  }]);
+  const r1 = await reviewRow(j, acme, "r1");
+  const r2 = await reviewRow(j, acme, "r2");
+
+  await worker.start();
+
+  await handle.reaching(2);
+  await until(
+    async () => (await j.queryRows(reviewQueue, acme)).length === 0,
+    "the review queue never drained"
+  );
+  assert.deepEqual(
+    handle.handled.sort(),
+    [r1.rowHash, r2.rowHash].sort(),
+    "the consumer did not dispatch both rows"
+  );
+
+  assert.deepEqual(
+    await hashesOf(j, approvalsOf, acme),
+    [j.hash(new Approved(r1.result))],
+    "the approved row was not retired through Approved"
+  );
+  assert.deepEqual(
+    await hashesOf(j, rejectionsOf, acme),
+    [j.hash(new Rejected(r2.result))],
+    "the rejected row was not retired through Rejected"
+  );
 
   await worker.stop();
 });
@@ -512,7 +567,7 @@ test("a consumer resolves its retry policy, its handler deadline, and no budget 
     name: "items",
     specification: outstanding,
     givens: [new Tenant("items")],
-    completes: Mirrored,
+    completes: [Mirrored],
     handle: async row => new Mirrored(row.result)
   });
 

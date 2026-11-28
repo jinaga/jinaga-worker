@@ -34,7 +34,7 @@ export function retiringTypes(specification: Specification): string[] {
  * and naming both sides is the whole of that diagnosis.
  *
  * Sound in one direction. An empty set proves the specification cannot shrink.
- * A non-empty one does not prove it will: a fact of the declared type built
+ * A non-empty one does not prove it will: a fact of a declared type built
  * against a predecessor the specification does not read is type-correct, retires
  * a different row, and still stalls. That residual is §10.2 T2, and the sweep is
  * what reports it.

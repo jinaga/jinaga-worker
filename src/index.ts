@@ -12,6 +12,7 @@ export {
 export { Logger } from "./logger";
 
 export {
+  Completions,
   CompletionConstructor,
   Consumer,
   ConsumerOptions,

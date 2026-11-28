@@ -70,7 +70,7 @@ const invitations = defineConsumer({
     name: "invitation-mirror",
     specification: outstandingInvitations,
     givens: [new Tenant("acme")],
-    completes: InvitationMirrored,
+    completes: [InvitationMirrored],
     handle: async row => {
         await mirror(row.result);
         return new InvitationMirrored(row.result);
