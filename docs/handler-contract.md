@@ -46,7 +46,7 @@ resolves without producing a fact, and one that returns a fact of a type outside
 the declared set. An empty `completes` is one too — a consumer that can never
 retire a row.
 
-A third is caught when you declare the consumer. `defineConsumer` inverts your
+One more is caught when you declare the consumer. `defineConsumer` inverts your
 specification to find the fact types that take a row out of it, and throws for
 each declared type that is none of them — a specification carrying no
 `notExists` at all, or one whose condition names a different fact. The message
@@ -87,8 +87,7 @@ Your specification excludes both, with one `notExists` each. A single outcome is
 spelled `[InvitationMirrored]`, the same way, so there is one spelling however
 many outcomes you have.
 
-A row can be dispatched more than once, so which outcome the handler returns has
-to be a function of the row and the premises it read: see
+A row can be dispatched more than once: see
 [the handler must be idempotent](#the-handler-must-be-idempotent).
 
 ## The attempt ends when the fact is stored
