@@ -80,6 +80,32 @@ class TaskDone {
   }
 }
 
+class Reviewer {
+  static Type = "Test.Reviewer";
+  constructor(tenant, name) {
+    this.type = Reviewer.Type;
+    this.tenant = tenant;
+    this.name = name;
+  }
+}
+
+class Approved {
+  static Type = "Test.Approved";
+  constructor(item, reviewer) {
+    this.type = Approved.Type;
+    this.item = item;
+    this.reviewer = reviewer;
+  }
+}
+
+class Revoked {
+  static Type = "Test.Revoked";
+  constructor(approved) {
+    this.type = Revoked.Type;
+    this.approved = approved;
+  }
+}
+
 const model = buildModel(b => b
   .type(Tenant)
   .type(Item, f => f.predecessor("tenant", Tenant))
@@ -88,7 +114,10 @@ const model = buildModel(b => b
   .type(ItemArchived, f => f.predecessor("item", Item))
   .type(Project, f => f.predecessor("tenant", Tenant))
   .type(Task, f => f.predecessor("project", Project))
-  .type(TaskDone, f => f.predecessor("task", Task)));
+  .type(TaskDone, f => f.predecessor("task", Task))
+  .type(Reviewer, f => f.predecessor("tenant", Tenant))
+  .type(Approved, f => f.predecessor("item", Item).predecessor("reviewer", Reviewer))
+  .type(Revoked, f => f.predecessor("approved", Approved)));
 
 /** The outstanding set in its ordinary form: items not yet handled. */
 const outstanding = model.given(Tenant).match((tenant, facts) =>
@@ -131,7 +160,36 @@ const outstandingTasks = model.given(Tenant).match((tenant, facts) =>
       .join(task => task.project, project)
       .notExists(task => facts.ofType(TaskDone).join(done => done.task, task))));
 
+/**
+ * The second given is reached only from inside the condition. Nothing joins
+ * `reviewer` to the row itself, so the row stream pins the arriving `Approved`
+ * and reads the reviewer through it.
+ */
+const unapprovedByReviewer = model.given(Tenant, Reviewer).match((tenant, reviewer, facts) =>
+  facts.ofType(Item)
+    .join(item => item.tenant, tenant)
+    .notExists(item => facts.ofType(Approved)
+      .join(approved => approved.item, item)
+      .join(approved => approved.reviewer, reviewer)));
+
+/** A `notExists` nested under an `exists`: the inner type retires a row. */
+const approvedAndUnrevoked = model.given(Tenant).match((tenant, facts) =>
+  facts.ofType(Item)
+    .join(item => item.tenant, tenant)
+    .exists(item => facts.ofType(Approved)
+      .join(approved => approved.item, item)
+      .notExists(approved => facts.ofType(Revoked).join(revoked => revoked.approved, approved))));
+
+/** A `notExists` nested under a `notExists`: the inner type adds a row. */
+const withoutUnrevokedApproval = model.given(Tenant).match((tenant, facts) =>
+  facts.ofType(Item)
+    .join(item => item.tenant, tenant)
+    .notExists(item => facts.ofType(Approved)
+      .join(approved => approved.item, item)
+      .notExists(approved => facts.ofType(Revoked).join(revoked => revoked.approved, approved))));
+
 const acme = new Tenant("acme");
+const quinn = new Reviewer(acme, "quinn");
 
 /** A handler is beside the point here; every one of these throws before it runs. */
 const completeWith = Completion => async row => new Completion(row.result);
@@ -290,5 +348,78 @@ test("a quarantine group whose produces is not excluded is rejected", () => {
       return true;
     },
     "an exhausted row would be written and go on matching the outstanding set"
+  );
+});
+
+test("a given joined only inside the condition is accepted", () => {
+  const consumer = defineConsumer({
+    name: "approvals",
+    specification: unapprovedByReviewer,
+    givens: [acme, quinn],
+    completes: [Approved],
+    handle: async row => new Approved(row.result, quinn)
+  });
+
+  assert.deepEqual(
+    consumer.retiringTypes,
+    ["Test.Approved"],
+    "the row stream serves this specification, so the declaration check accepts it"
+  );
+});
+
+test("the inner type of an exists over a notExists retires a row", () => {
+  const consumer = defineConsumer({
+    name: "revocations",
+    specification: approvedAndUnrevoked,
+    givens: [acme],
+    completes: [Revoked],
+    handle: completeWith(Revoked)
+  });
+
+  assert.deepEqual(
+    consumer.retiringTypes,
+    ["Test.Revoked"],
+    "a Revoked makes the inner notExists false, which makes the exists false"
+  );
+});
+
+test("the inner type of a notExists over a notExists is rejected, naming what retires", () => {
+  assert.throws(
+    () => defineConsumer({
+      name: "revocations",
+      specification: withoutUnrevokedApproval,
+      givens: [acme],
+      completes: [Revoked],
+      handle: completeWith(Revoked)
+    }),
+    error => {
+      assert.match(error.message, /completes Test\.Revoked/);
+      assert.match(
+        error.message,
+        /retires a row on: Test\.Approved\.$/,
+        "a Revoked admits a row here, and only an Approved retires one"
+      );
+      return true;
+    }
+  );
+});
+
+test("each retiring type is reported once, however many conditions the specification has", () => {
+  const consumer = defineConsumer({
+    name: "items",
+    specification: outstandingWithQuarantine,
+    givens: [acme],
+    completes: [ItemHandled],
+    handle: completeWith(ItemHandled),
+    quarantine: {
+      produces: ItemQuarantined,
+      fact: async (row, event) => new ItemQuarantined(row.result, event.kind)
+    }
+  });
+
+  assert.deepEqual(
+    consumer.retiringTypes,
+    ["Test.Item.Handled", "Test.Item.Quarantined"],
+    "the types a row can leave the set on, each named once"
   );
 });
