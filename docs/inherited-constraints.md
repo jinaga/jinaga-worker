@@ -25,10 +25,11 @@ every sweep throws.
 ## Changes are decided per save, and nothing is ordered across saves
 
 Each change is decided by reading the result from the replica's own graph, so
-after one save's notifications the rows the stream has offered and not withdrawn
-are exactly what a read returns. Within one save the delivery order decides
-nothing, and a row whose source fact and completion fact arrive in the same save
-is in the result at neither boundary, so that save produces no change for it.
+after one save's notifications, when no other save's re-check overlaps them, the
+rows the stream has offered and not withdrawn are exactly what a read returns.
+Within one save the delivery order decides nothing, and a row whose source fact
+and completion fact arrive in the same save is in the result at neither
+boundary, so that save produces no change for it.
 
 Across two saves whose re-checks overlap there is no order. The first save's
 re-check can read before the second save lands, so an `added` can arrive behind

@@ -51,6 +51,14 @@ export class ConsumerRuntime {
      * so what the timer acts on, what an operator sees, and what the verdict
      * covers cannot disagree. A record of writes with no pass to apply it to is
      * not a state the problem contains, so the set lives and dies with the pass.
+     *
+     * It holds one key per row whose entry changed while the read was in
+     * flight, the rows that left during it included, because those are the ones
+     * a stale read would otherwise admit as new. So it costs the churn of one
+     * read rather than the outstanding set, and the pass releases it on every
+     * exit. A read that never settles is the case where that churn has no end,
+     * and it is already the case where no later pass reads at all (§3.2), which
+     * is what this field's age reports to an operator (§2.4).
      */
     private sweepInFlight: { since: Date; written: Set<string> } | undefined;
 
